@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <title>Raspberry Pi Sensor Dashboard</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #111;
+            color: #eee;
+            padding: 20px;
+        }
+        h1 {
+            color: #00ffcc;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        th, td {
+            border: 1px solid #333;
+            padding: 8px;
+            text-align: center;
+        }
+        th {
+            background: #222;
+        }
+        tr:nth-child(even) {
+            background: #1b1b1b;
+        }
+        .yes { color: #ff5252; font-weight: bold; }
+        .no  { color: #00e676; }
+    </style>
+</head>
+<body>
+
+<h1>🌡 Raspberry Pi Sensor Station</h1>
+<p>Letzte Messwerte aus der MariaDB</p>
+
+<table>
+    <tr>
+        <th>Zeit</th>
+        <th>Temp (°C)</th>
+        <th>Druck (hPa)</th>
+        <th>Feuchte (%)</th>
+        <th>Gas (Ω)</th>
+        <th>Bewegung</th>
+    </tr>
+
+    {% for row in data %}
+    <tr>
+        <td>{{ row.timestamp }}</td>
+        <td>{{ row.temperature }}</td>
+        <td>{{ row.pressure }}</td>
+        <td>{{ row.humidity }}</td>
+        <td>{{ row.gas_resistance if row.gas_resistance else "N/A" }}</td>
+        <td class="{{ 'yes' if row.movement_detected else 'no' }}">
+            {{ "Ja" if row.movement_detected else "Nein" }}
+        </td>
+    </tr>
+    {% endfor %}
+</table>
+
+</body>
+</html>
