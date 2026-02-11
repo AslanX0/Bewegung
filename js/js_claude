@@ -1,0 +1,538 @@
+/* ============================================================
+   Asia - All you can Eat | Restaurant Manager
+   Main JavaScript
+   ============================================================ */
+
+// Konfiguration
+const API = '';          // Basis-URL (leer = gleicher Server)
+const INT = 30000;       // Update-Intervall in ms (30s)
+
+// Globaler State
+let st = {
+    pg: 1,      // Aktuelle Seite (Tabelle)
+    pp: 20,     // Einträge pro Seite
+    tp: 1,      // Gesamtseiten
+    ch: {},     // Chart-Instanzen
+    cr: 24,     // Dashboard Chart Range (Stunden)
+    or: 24,     // Occupancy Chart Range (Stunden)
+    sr: 24      // Sensor Chart Range (Stunden)
+};
+
+// ============================================================
+// Hilfsfunktionen
+// ============================================================
+
+function fmt(n, d = 1) {
+    return n == null ? '--' : Number(n).toFixed(d);
+}
+
+function fmtT(t) {
+    return new Date(t).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+}
+
+function fmtDT(t) {
+    return new Date(t).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+function upStatus(connected) {
+    document.getElementById('statusDot').classList.toggle('off', !connected);
+    document.getElementById('statusText').textContent = connected ? 'Verbunden' : 'Offline';
+}
+
+function toast(msg, isError) {
+    const container = document.getElementById('toasts');
+    const t = document.createElement('div');
+    t.className = 'toast' + (isError ? ' err' : '');
+    t.innerHTML = '<span class="mi">' + (isError ? 'error' : 'check_circle') + '</span> ' + msg;
+    container.appendChild(t);
+    setTimeout(() => t.remove(), 3000);
+}
+
+async function api(endpoint) {
+    try {
+        const r = await fetch(API + '/api' + endpoint);
+        const d = await r.json();
+        if (!d.success) throw new Error(d.error);
+        return d;
+    } catch (x) {
+        console.error('API Error:', endpoint, x);
+        throw x;
+    }
+}
+
+// Uhr
+setInterval(() => {
+    document.getElementById('clock').textContent =
+        new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+}, 1000);
+
+// ============================================================
+// Tab-Navigation
+// ============================================================
+
+document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('.content').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+    document.getElementById(t.dataset.tab).classList.add('active');
+    if (t.dataset.tab === 'history') refreshTable();
+});
+
+// ============================================================
+// Dashboard (Uebersicht)
+// ============================================================
+
+async function loadDash() {
+    try {
+        const o = await api('/occupancy/current');
+        const s = await api('/data/stats');
+
+        // --- Gaeste ---
+        const g = o.data.estimated_occupancy || 0;
+        document.getElementById('dGuests').textContent = g;
+        document.getElementById('dGuestsSub').textContent = Math.round(g / 120 * 100) + '% Auslastung';
+
+        // --- Klimaanlage ---
+        const ac = o.data.ac_recommendation || 3;
+        document.getElementById('dAC').textContent = ac;
+        const acs = document.getElementById('dACSub');
+        if (ac === 3) {
+            acs.className = 'stat-sub good';
+            acs.textContent = 'Optimal';
+        } else {
+            acs.className = 'stat-sub';
+            acs.textContent = 'Empfehlung: Stufe ' + ac;
+        }
+
+        // --- Temperatur ---
+        if (o.data.sensors) {
+            const temp = o.data.sensors.temperature;
+            document.getElementById('dTemp').innerHTML = fmt(temp) + '<span class="unit">°C</span>';
+            const tempSub = document.getElementById('dTempSub');
+            if (temp >= 20 && temp <= 24) {
+                tempSub.className = 'stat-sub good';
+                tempSub.textContent = 'Angenehm';
+            } else if (temp < 18 || temp > 26) {
+                tempSub.className = 'stat-sub';
+                tempSub.textContent = temp < 18 ? 'Zu kalt' : 'Zu warm';
+            } else {
+                tempSub.className = 'stat-sub';
+                tempSub.textContent = 'Grenzbereich';
+            }
+
+            // --- Luftqualitaet ---
+            const gv = o.data.sensors.gas_resistance;
+            const airVal = gv > 100000 ? 'Sehr gut' : gv > 50000 ? 'Gut' : 'Maessig';
+            document.getElementById('dAir').textContent = airVal;
+            const airSub = document.getElementById('dAirSub');
+            if (gv > 50000) {
+                airSub.className = 'stat-sub good';
+                airSub.textContent = 'Frische Luft';
+            } else {
+                airSub.className = 'stat-sub';
+                airSub.textContent = 'Lueften empfohlen';
+            }
+        }
+
+        // --- Tagesstatistik ---
+        if (s.data) {
+            document.getElementById('dAvgT').textContent = fmt(s.data.avg_temp) + ' °C';
+            document.getElementById('dMaxT').textContent = fmt(s.data.max_temp) + ' °C';
+            document.getElementById('dMinT').textContent = fmt(s.data.min_temp) + ' °C';
+            document.getElementById('dAvgH').textContent = fmt(s.data.avg_humidity) + ' %';
+            document.getElementById('dAvgG').textContent = fmt(s.data.avg_occupancy, 0) + ' Pers.';
+            document.getElementById('dMaxG').textContent = fmt(s.data.max_occupancy, 0) + ' Pers.';
+            document.getElementById('dMotCount').textContent = (s.data.movement_count || 0) + ' Erkennungen';
+            document.getElementById('dReadings').textContent = (s.data.total_readings || 0) + ' Messungen';
+        }
+
+        document.getElementById('lastUpd').textContent = new Date().toLocaleTimeString('de-DE');
+        upStatus(true);
+    } catch (e) {
+        console.error('loadDash error:', e);
+        upStatus(false);
+    }
+}
+
+// ============================================================
+// Gaeste & Klima
+// ============================================================
+
+async function loadOcc() {
+    try {
+        const { data: d } = await api('/occupancy/current');
+        const g = d.estimated_occupancy || 0;
+        const p = d.occupancy_percent || 0;
+
+        document.getElementById('occVal').textContent = g;
+        document.getElementById('gPct').textContent = Math.round(p) + '%';
+
+        // Gauge animieren
+        const ga = document.getElementById('gauge');
+        const off = 471 - (p / 100) * 471;
+        ga.style.strokeDashoffset = off;
+        ga.style.stroke = p < 50 ? '#2ecc71' : p < 80 ? '#f39c12' : '#e74c3c';
+
+        // Klimaanlage Stufen
+        const ac = d.ac_recommendation || 3;
+        document.querySelectorAll('.ac-lvl').forEach(e => {
+            e.classList.remove('cur', 'rec');
+            if (+e.dataset.l === 3) e.classList.add('cur');
+            if (+e.dataset.l === ac) e.classList.add('rec');
+        });
+
+        const as2 = document.getElementById('acStat');
+        if (ac === 3) {
+            as2.className = 'ac-stat ok';
+            as2.textContent = 'Stufe 3 ist optimal';
+        } else {
+            as2.className = 'ac-stat adj';
+            as2.textContent = 'Empfehlung: Stufe ' + ac;
+        }
+
+        // Quick Stats
+        if (d.sensors) {
+            document.getElementById('oTemp').textContent = fmt(d.sensors.temperature) + '°C';
+            document.getElementById('oHum').textContent = fmt(d.sensors.humidity) + '%';
+            const gv = d.sensors.gas_resistance;
+            document.getElementById('oGas').textContent = gv
+                ? (gv > 100000 ? 'Sehr gut' : gv > 50000 ? 'Gut' : 'Maessig')
+                : '--';
+            document.getElementById('oMot').textContent = d.sensors.movement_count_5min || 0;
+        }
+
+        upStatus(true);
+    } catch (e) {
+        upStatus(false);
+    }
+}
+
+// ============================================================
+// Sensoren
+// ============================================================
+
+async function loadSens() {
+    try {
+        const { data: d } = await api('/data/latest');
+        const { data: s } = await api('/data/stats');
+
+        // Sensor-Werte
+        document.getElementById('sTemp').innerHTML = fmt(d.temperature) + '<span class="unit">°C</span>';
+        document.getElementById('sHum').innerHTML = fmt(d.humidity) + '<span class="unit">%</span>';
+        document.getElementById('sPres').innerHTML = fmt(d.pressure, 0) + '<span class="unit">hPa</span>';
+
+        const g = d.gas_resistance;
+        document.getElementById('sGas').innerHTML = g
+            ? fmt(g / 1000, 0) + '<span class="unit">kOhm</span>'
+            : '--';
+
+        // Status-Badges Temperatur
+        const ts = document.getElementById('sTempS');
+        const t = d.temperature;
+        if (t >= 20 && t <= 24) {
+            ts.className = 'sensor-stat good'; ts.textContent = 'Angenehm';
+        } else if (t < 18 || t > 26) {
+            ts.className = 'sensor-stat warn'; ts.textContent = t < 18 ? 'Zu kalt' : 'Zu warm';
+        } else {
+            ts.className = 'sensor-stat warn'; ts.textContent = 'Grenzbereich';
+        }
+
+        // Status-Badges Feuchtigkeit
+        const hs = document.getElementById('sHumS');
+        const h = d.humidity;
+        if (h >= 40 && h <= 60) {
+            hs.className = 'sensor-stat good'; hs.textContent = 'Optimal';
+        } else {
+            hs.className = 'sensor-stat warn'; hs.textContent = h < 40 ? 'Trocken' : 'Feucht';
+        }
+
+        // Status-Badges Gas
+        const gs = document.getElementById('sGasS');
+        if (g > 100000) {
+            gs.className = 'sensor-stat good'; gs.textContent = 'Sehr frisch';
+        } else if (g > 50000) {
+            gs.className = 'sensor-stat good'; gs.textContent = 'Frisch';
+        } else {
+            gs.className = 'sensor-stat warn'; gs.textContent = 'Lueften empfohlen';
+        }
+
+        // Status-Badges Bewegung
+        const ms = document.getElementById('sMotS');
+        if (d.movement_detected) {
+            document.getElementById('sMot').textContent = 'Aktiv';
+            ms.className = 'sensor-stat good'; ms.textContent = 'Bewegung erkannt';
+        } else {
+            document.getElementById('sMot').textContent = 'Ruhig';
+            ms.className = 'sensor-stat'; ms.textContent = 'Keine Bewegung';
+        }
+
+        // 24h Statistik (Sensor-Tab)
+        if (s) {
+            document.getElementById('sAvgT').textContent = fmt(s.avg_temp) + ' °C';
+            document.getElementById('sMaxT').textContent = fmt(s.max_temp) + ' °C';
+            document.getElementById('sMinT').textContent = fmt(s.min_temp) + ' °C';
+            document.getElementById('sAvgH').textContent = fmt(s.avg_humidity) + ' %';
+        }
+
+        upStatus(true);
+    } catch (e) {
+        upStatus(false);
+    }
+}
+
+// ============================================================
+// Charts
+// ============================================================
+
+const cc = {
+    p: '#c41e3a', pl: 'rgba(196,30,58,0.1)',
+    b: '#3498db', bl: 'rgba(52,152,219,0.1)',
+    g: '#2ecc71', gl: 'rgba(46,204,113,0.2)'
+};
+
+function cOpt() {
+    return {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+            legend: {
+                labels: { color: '#5a5a5a', font: { family: 'Poppins' } }
+            }
+        },
+        scales: {
+            x: { grid: { color: '#f0f0f0' }, ticks: { color: '#888', maxTicksLimit: 10 } },
+            y: { grid: { color: '#f0f0f0' }, ticks: { color: '#888' } }
+        }
+    };
+}
+
+async function initCharts() {
+    // Dashboard Chart
+    st.ch.dash = new Chart(document.getElementById('dashChart'), {
+        type: 'line',
+        data: {
+            labels: [],
+            datasets: [{
+                label: 'Gaeste',
+                data: [],
+                borderColor: cc.p,
+                backgroundColor: cc.pl,
+                fill: true, tension: 0.4, borderWidth: 2
+            }]
+        },
+        options: cOpt()
+    });
+
+    // Occupancy Chart
+    st.ch.occ = new Chart(document.getElementById('occChart'), {
+        type: 'line',
+        data: {
+            labels: [],
+            datasets: [{
+                label: 'Geschaetzte Gaeste',
+                data: [],
+                borderColor: cc.g,
+                backgroundColor: cc.gl,
+                fill: true, tension: 0.4, borderWidth: 2
+            }]
+        },
+        options: {
+            ...cOpt(),
+            scales: { ...cOpt().scales, y: { ...cOpt().scales.y, min: 0, max: 120 } }
+        }
+    });
+
+    // Temperatur & Feuchtigkeit Chart
+    st.ch.th = new Chart(document.getElementById('thChart'), {
+        type: 'line',
+        data: {
+            labels: [],
+            datasets: [
+                {
+                    label: 'Temperatur (°C)',
+                    data: [],
+                    borderColor: cc.p,
+                    backgroundColor: cc.pl,
+                    fill: true, tension: 0.4, borderWidth: 2,
+                    yAxisID: 'y'
+                },
+                {
+                    label: 'Feuchtigkeit (%)',
+                    data: [],
+                    borderColor: cc.b,
+                    backgroundColor: cc.bl,
+                    fill: true, tension: 0.4, borderWidth: 2,
+                    yAxisID: 'y1'
+                }
+            ]
+        },
+        options: {
+            ...cOpt(),
+            scales: {
+                x: cOpt().scales.x,
+                y: cOpt().scales.y,
+                y1: { position: 'right', grid: { drawOnChartArea: false }, ticks: { color: '#888' } }
+            }
+        }
+    });
+
+    await upCharts();
+}
+
+async function upCharts() {
+    try {
+        const oh = await api('/occupancy/history?hours=' + st.or);
+        const sh = await api('/data/history?hours=' + st.sr);
+
+        const ol = oh.data.map(d => fmtT(d.timestamp));
+        const sl = sh.data.map(d => fmtT(d.timestamp));
+
+        // Dashboard Chart (Gaeste)
+        if (st.ch.dash) {
+            st.ch.dash.data.labels = ol;
+            st.ch.dash.data.datasets[0].data = oh.data.map(d => d.estimated_occupancy);
+            st.ch.dash.update();
+        }
+
+        // Occupancy Chart
+        if (st.ch.occ) {
+            st.ch.occ.data.labels = ol;
+            st.ch.occ.data.datasets[0].data = oh.data.map(d => d.estimated_occupancy);
+            st.ch.occ.update();
+        }
+
+        // Temperatur & Feuchtigkeit Chart
+        if (st.ch.th) {
+            st.ch.th.data.labels = sl;
+            st.ch.th.data.datasets[0].data = sh.data.map(d => d.temperature);
+            st.ch.th.data.datasets[1].data = sh.data.map(d => d.humidity);
+            st.ch.th.update();
+        }
+    } catch (e) {
+        console.error('Chart update error:', e);
+    }
+}
+
+// Range-Button Event Listener
+document.querySelectorAll('[data-dr]').forEach(b => b.onclick = e => {
+    e.target.closest('.range').querySelectorAll('.range-btn').forEach(x => x.classList.remove('active'));
+    e.target.classList.add('active');
+    st.or = +e.target.dataset.dr;
+    upCharts();
+});
+
+document.querySelectorAll('[data-or]').forEach(b => b.onclick = e => {
+    e.target.closest('.range').querySelectorAll('.range-btn').forEach(x => x.classList.remove('active'));
+    e.target.classList.add('active');
+    st.or = +e.target.dataset.or;
+    upCharts();
+});
+
+document.querySelectorAll('[data-sr]').forEach(b => b.onclick = e => {
+    e.target.closest('.range').querySelectorAll('.range-btn').forEach(x => x.classList.remove('active'));
+    e.target.classList.add('active');
+    st.sr = +e.target.dataset.sr;
+    upCharts();
+});
+
+// ============================================================
+// Verlauf (History Table)
+// ============================================================
+
+async function refreshTable() {
+    try {
+        const { data: d, pagination: p } = await api('/data/table?page=' + st.pg + '&per_page=' + st.pp);
+
+        document.getElementById('tBody').innerHTML = d.map(r => {
+            const dsClass = r.data_source === 'TEST' ? 'test' : 'real';
+            const dsLabel = r.data_source || 'REAL';
+            return '<tr>' +
+                '<td>' + fmtDT(r.timestamp) + '</td>' +
+                '<td><strong>' + (r.estimated_occupancy != null ? r.estimated_occupancy : '-') + '</strong></td>' +
+                '<td>Stufe ' + (r.ac_recommendation != null ? r.ac_recommendation : '-') + '</td>' +
+                '<td>' + fmt(r.temperature) + '°C</td>' +
+                '<td>' + fmt(r.humidity) + '%</td>' +
+                '<td>' + fmt(r.pressure, 0) + ' hPa</td>' +
+                '<td><span class="badge ' + (r.movement_detected ? 'yes' : 'no') + '">' +
+                    (r.movement_detected ? 'Ja' : 'Nein') + '</span></td>' +
+                '<td><span class="badge ' + dsClass + '">' + dsLabel + '</span></td>' +
+                '</tr>';
+        }).join('');
+
+        st.tp = p.pages;
+        const startRow = (p.page - 1) * p.per_page + 1;
+        const endRow = Math.min(p.page * p.per_page, p.total);
+        document.getElementById('pagInfo').textContent =
+            'Zeige ' + startRow + '-' + endRow + ' von ' + p.total + ' Eintraegen';
+        document.getElementById('prevP').disabled = p.page <= 1;
+        document.getElementById('nextP').disabled = p.page >= p.pages;
+    } catch (e) {
+        console.error('Table refresh error:', e);
+    }
+}
+
+document.getElementById('prevP').onclick = () => {
+    if (st.pg > 1) { st.pg--; refreshTable(); }
+};
+document.getElementById('nextP').onclick = () => {
+    if (st.pg < st.tp) { st.pg++; refreshTable(); }
+};
+
+// ============================================================
+// CSV Export
+// ============================================================
+
+async function exportCSV() {
+    try {
+        const { data: d } = await api('/data/history?limit=1000');
+        const h = ['Zeitpunkt', 'Gaeste', 'Klimastufe', 'Temperatur', 'Feuchtigkeit', 'Luftdruck', 'Bewegung', 'Quelle'];
+        const r = d.map(x => [
+            x.timestamp,
+            x.estimated_occupancy || '',
+            x.ac_recommendation || '',
+            x.temperature,
+            x.humidity,
+            x.pressure,
+            x.movement_detected ? 'Ja' : 'Nein',
+            x.data_source || 'REAL'
+        ]);
+        const csv = [h, ...r].map(x => x.join(';')).join('\n');
+        const b = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(b);
+        a.download = 'Asia_Restaurant_' + new Date().toISOString().split('T')[0] + '.csv';
+        a.click();
+        toast('Export erfolgreich!');
+    } catch (e) {
+        toast('Export fehlgeschlagen', true);
+    }
+}
+
+// ============================================================
+// Initialisierung
+// ============================================================
+
+async function init() {
+    try {
+        await loadDash();
+        await loadOcc();
+        await loadSens();
+        await initCharts();
+    } catch (e) {
+        console.error('Init error:', e);
+    }
+
+    // Auto-Update
+    setInterval(async () => {
+        try {
+            await loadDash();
+            await loadOcc();
+            await loadSens();
+            await upCharts();
+        } catch (e) {
+            console.error('Update error:', e);
+        }
+    }, INT);
+}
+
+init();

@@ -1,0 +1,52 @@
+-- ============================================================
+-- Asia Restaurant Dashboard - Datenbank Setup
+-- Erstellt die sensor_db Datenbank und sensor_data Tabelle
+-- ============================================================
+
+-- Datenbank erstellen
+CREATE DATABASE IF NOT EXISTS sensor_db
+    CHARACTER SET utf8mb4
+    COLLATE utf8mb4_general_ci;
+
+USE sensor_db;
+
+-- Tabelle erstellen (oder aktualisieren)
+CREATE TABLE IF NOT EXISTS sensor_data (
+    id                  INT AUTO_INCREMENT PRIMARY KEY,
+    timestamp           DATETIME NOT NULL,
+    temperature         FLOAT NOT NULL,
+    pressure            FLOAT,
+    humidity            FLOAT,
+    gas_resistance      FLOAT,
+    movement_detected   BOOLEAN NOT NULL DEFAULT FALSE,
+    estimated_occupancy INT DEFAULT NULL,
+    ac_recommendation   INT DEFAULT NULL,
+    data_source         CHAR(4) NOT NULL DEFAULT 'REAL',
+    
+    INDEX idx_timestamp (timestamp),
+    INDEX idx_data_source (data_source)
+);
+
+-- Falls Tabelle bereits existiert: neue Spalten hinzufuegen
+-- (MariaDB unterstuetzt IF NOT EXISTS bei ALTER TABLE)
+ALTER TABLE sensor_data ADD COLUMN IF NOT EXISTS 
+    estimated_occupancy INT DEFAULT NULL;
+
+ALTER TABLE sensor_data ADD COLUMN IF NOT EXISTS 
+    ac_recommendation INT DEFAULT NULL;
+
+ALTER TABLE sensor_data ADD COLUMN IF NOT EXISTS 
+    data_source CHAR(4) NOT NULL DEFAULT 'REAL';
+
+-- Bestehende Datensaetze ohne data_source auf 'REAL' setzen
+UPDATE sensor_data SET data_source = 'REAL' 
+    WHERE data_source IS NULL OR data_source = '';
+
+-- Uebersicht
+SELECT 
+    data_source,
+    COUNT(*) AS anzahl,
+    MIN(timestamp) AS von,
+    MAX(timestamp) AS bis
+FROM sensor_data
+GROUP BY data_source;

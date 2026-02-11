@@ -1,0 +1,433 @@
+"""
+===============================================================================
+ Flask Server – Asia Restaurant Dashboard
+ API-Endpunkte für Sensordaten, Personenschätzung und Klimaempfehlung
+===============================================================================
+"""
+
+from flask import Flask, render_template, jsonify, request
+from flask_cors import CORS
+import pymysql
+from datetime import datetime, timedelta
+
+# Personenschätzung importieren
+from regressionsanalyse import PersonEstimator
+
+app = Flask(__name__)
+CORS(app)
+
+# ==============================================================================
+# DATENBANK-KONFIGURATION
+# ==============================================================================
+
+db_config = {
+    'host': 'localhost',
+    'port': 3306,
+    'user': 'root',
+    'password': 'root',
+    'database': 'sensor_db',
+    'charset': 'utf8mb4',
+    'cursorclass': pymysql.cursors.DictCursor
+}
+
+# Personenschätzer initialisieren
+estimator = PersonEstimator()
+
+
+def get_db_connection():
+    """Erstellt eine neue Datenbankverbindung."""
+    try:
+        conn = pymysql.connect(**db_config)
+        return conn
+    except pymysql.Error as e:
+        print(f"Fehler bei Datenbankverbindung: {e}")
+        return None
+
+
+# ==============================================================================
+# HAUPTSEITE
+# ==============================================================================
+
+@app.route("/")
+def index():
+    """Hauptseite – Dashboard."""
+    return render_template("index.html")
+
+
+# ==============================================================================
+# API: SENSORDATEN
+# ==============================================================================
+
+@app.route("/api/data/latest")
+def api_latest():
+    """Neueste Messung."""
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({"success": False, "error": "Datenbankverbindung fehlgeschlagen"}), 500
+
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM sensor_data 
+            ORDER BY id DESC 
+            LIMIT 1
+        """)
+        data = cursor.fetchone()
+
+        if data and data.get("timestamp"):
+            data["timestamp"] = data["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
+
+        return jsonify({"success": True, "data": data or {}})
+    except pymysql.Error as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/data/stats")
+def api_stats():
+    """Statistiken der letzten 24 Stunden – inkl. Occupancy-Daten."""
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({"success": False, "error": "Datenbankverbindung fehlgeschlagen"}), 500
+
+    try:
+        cursor = conn.cursor()
+        time_24h_ago = datetime.now() - timedelta(hours=24)
+
+        cursor.execute("""
+            SELECT 
+                COUNT(*) as total_readings,
+                AVG(temperature) as avg_temp,
+                MAX(temperature) as max_temp,
+                MIN(temperature) as min_temp,
+                AVG(humidity) as avg_humidity,
+                AVG(pressure) as avg_pressure,
+                SUM(CASE WHEN movement_detected = 1 THEN 1 ELSE 0 END) as movement_count,
+                AVG(estimated_occupancy) as avg_occupancy,
+                MAX(estimated_occupancy) as max_occupancy,
+                MIN(estimated_occupancy) as min_occupancy
+            FROM sensor_data
+            WHERE timestamp >= %s
+        """, (time_24h_ago,))
+
+        stats = cursor.fetchone()
+        return jsonify({"success": True, "data": stats or {}})
+    except pymysql.Error as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/data/history")
+def api_history():
+    """Historische Sensordaten für Charts."""
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({"success": False, "error": "Datenbankverbindung fehlgeschlagen"}), 500
+
+    try:
+        hours = int(request.args.get('hours', 24))
+        limit = int(request.args.get('limit', 1000))
+        time_ago = datetime.now() - timedelta(hours=hours)
+
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM sensor_data
+            WHERE timestamp >= %s
+            ORDER BY timestamp ASC
+            LIMIT %s
+        """, (time_ago, limit))
+
+        data = cursor.fetchall()
+        for row in data:
+            if row.get("timestamp"):
+                row["timestamp"] = row["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
+
+        return jsonify({"success": True, "data": data})
+    except pymysql.Error as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/data/table")
+def api_table():
+    """Paginierte Tabellendaten mit Occupancy und data_source."""
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({"success": False, "error": "Datenbankverbindung fehlgeschlagen"}), 500
+
+    try:
+        page = int(request.args.get('page', 1))
+        per_page = int(request.args.get('per_page', 20))
+        offset = (page - 1) * per_page
+
+        cursor = conn.cursor()
+
+        # Gesamtanzahl
+        cursor.execute("SELECT COUNT(*) as total FROM sensor_data")
+        total = cursor.fetchone()['total']
+
+        # Daten für aktuelle Seite
+        cursor.execute("""
+            SELECT * FROM sensor_data
+            ORDER BY id DESC
+            LIMIT %s OFFSET %s
+        """, (per_page, offset))
+
+        data = cursor.fetchall()
+        for row in data:
+            if row.get("timestamp"):
+                row["timestamp"] = row["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
+
+        pagination = {
+            'page': page,
+            'per_page': per_page,
+            'total': total,
+            'pages': (total + per_page - 1) // per_page
+        }
+
+        return jsonify({"success": True, "data": data, "pagination": pagination})
+    except pymysql.Error as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+# ==============================================================================
+# API: PERSONENSCHÄTZUNG (OCCUPANCY)
+# ==============================================================================
+
+@app.route("/api/occupancy/current")
+def api_occupancy_current():
+    """
+    Aktuelle Personenschätzung basierend auf dem neuesten Sensordatensatz.
+    Nutzt den PersonEstimator für die Berechnung.
+    """
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({"success": False, "error": "Datenbankverbindung fehlgeschlagen"}), 500
+
+    try:
+        cursor = conn.cursor()
+
+        # Neueste Messung holen
+        cursor.execute("SELECT * FROM sensor_data ORDER BY id DESC LIMIT 1")
+        latest = cursor.fetchone()
+
+        if not latest:
+            return jsonify({"success": True, "data": {
+                "estimated_occupancy": 0,
+                "occupancy_percent": 0,
+                "ac_recommendation": 3,
+                "confidence": 0,
+                "sensors": None
+            }})
+
+        # Bewegungsrate der letzten 30 Min berechnen
+        movement_rate = estimator.get_movement_rate(cursor, minutes=30)
+
+        # Bewegungszähler der letzten 5 Min
+        cursor.execute("""
+            SELECT SUM(CASE WHEN movement_detected = 1 THEN 1 ELSE 0 END) as cnt
+            FROM sensor_data
+            WHERE timestamp >= NOW() - INTERVAL 5 MINUTE
+        """)
+        mot5 = cursor.fetchone()
+        movement_count_5min = mot5['cnt'] if mot5 and mot5['cnt'] else 0
+
+        # Personenschätzung durchführen
+        result = estimator.estimate(
+            temperature=latest.get('temperature', 22.0),
+            humidity=latest.get('humidity', 40.0),
+            gas_resistance=latest.get('gas_resistance'),
+            movement_detected=bool(latest.get('movement_detected', False)),
+            movement_rate=movement_rate
+        )
+
+        persons = result['estimated_persons']
+        ac_rec = result['climate_recommendation']['level']
+
+        # Occupancy in DB aktualisieren (neuester Datensatz)
+        try:
+            cursor.execute("""
+                UPDATE sensor_data 
+                SET estimated_occupancy = %s, ac_recommendation = %s
+                WHERE id = %s
+            """, (persons, ac_rec, latest['id']))
+            conn.commit()
+        except Exception:
+            pass  # Spalten existieren evtl. noch nicht
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "estimated_occupancy": persons,
+                "occupancy_percent": round(persons / 120 * 100, 1),
+                "ac_recommendation": ac_rec,
+                "confidence": result['confidence'],
+                "model": result['model'],
+                "sensors": {
+                    "temperature": latest.get('temperature'),
+                    "humidity": latest.get('humidity'),
+                    "pressure": latest.get('pressure'),
+                    "gas_resistance": latest.get('gas_resistance'),
+                    "movement_detected": bool(latest.get('movement_detected', False)),
+                    "movement_count_5min": movement_count_5min
+                },
+                "climate_recommendation": result['climate_recommendation'],
+                "details": result.get('details', {})
+            }
+        })
+    except pymysql.Error as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/occupancy/history")
+def api_occupancy_history():
+    """Historische Occupancy-Daten für Charts."""
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({"success": False, "error": "Datenbankverbindung fehlgeschlagen"}), 500
+
+    try:
+        hours = int(request.args.get('hours', 24))
+        time_ago = datetime.now() - timedelta(hours=hours)
+
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT timestamp, estimated_occupancy, ac_recommendation,
+                   temperature, humidity, gas_resistance, movement_detected
+            FROM sensor_data
+            WHERE timestamp >= %s
+            ORDER BY timestamp ASC
+            LIMIT 500
+        """, (time_ago,))
+
+        data = cursor.fetchall()
+        for row in data:
+            if row.get("timestamp"):
+                row["timestamp"] = row["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
+            # Falls estimated_occupancy NULL ist, nachträglich schätzen
+            if row.get("estimated_occupancy") is None:
+                try:
+                    est = estimator.estimate(
+                        temperature=row.get('temperature', 22.0),
+                        humidity=row.get('humidity', 40.0),
+                        gas_resistance=row.get('gas_resistance'),
+                        movement_detected=bool(row.get('movement_detected', False))
+                    )
+                    row['estimated_occupancy'] = est['estimated_persons']
+                    row['ac_recommendation'] = est['climate_recommendation']['level']
+                except Exception:
+                    row['estimated_occupancy'] = 0
+                    row['ac_recommendation'] = 3
+
+        return jsonify({"success": True, "data": data})
+    except pymysql.Error as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+# ==============================================================================
+# API: KALIBRIERUNG & TRAINING
+# ==============================================================================
+
+@app.route("/api/estimator/status")
+def api_estimator_status():
+    """Status des Personenschätzers."""
+    return jsonify({"success": True, "data": estimator.get_status()})
+
+
+@app.route("/api/estimator/baseline", methods=["POST"])
+def api_set_baseline():
+    """Baseline-Werte setzen (leeres Restaurant)."""
+    data = request.get_json()
+    if not data:
+        return jsonify({"success": False, "error": "JSON-Daten erforderlich"}), 400
+
+    estimator.set_baseline(
+        temperature=data.get('temperature', 22.0),
+        humidity=data.get('humidity', 40.0),
+        gas_resistance=data.get('gas_resistance', 200000)
+    )
+    return jsonify({"success": True, "message": "Baseline gesetzt"})
+
+
+@app.route("/api/estimator/train", methods=["POST"])
+def api_add_training():
+    """Trainingspunkt hinzufügen (manuelle Zählung)."""
+    data = request.get_json()
+    if not data or 'actual_persons' not in data:
+        return jsonify({"success": False, "error": "actual_persons erforderlich"}), 400
+
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({"success": False, "error": "Datenbankverbindung fehlgeschlagen"}), 500
+
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM sensor_data ORDER BY id DESC LIMIT 1")
+        latest = cursor.fetchone()
+
+        if latest:
+            estimator.add_training_point(
+                actual_persons=int(data['actual_persons']),
+                temperature=latest.get('temperature', 22.0),
+                humidity=latest.get('humidity', 40.0),
+                gas_resistance=latest.get('gas_resistance'),
+                movement_detected=bool(latest.get('movement_detected', False))
+            )
+            return jsonify({"success": True, "message": "Trainingspunkt gespeichert",
+                            "status": estimator.get_status()})
+        else:
+            return jsonify({"success": False, "error": "Keine Sensordaten vorhanden"}), 404
+    finally:
+        conn.close()
+
+
+# ==============================================================================
+# LEGACY
+# ==============================================================================
+
+@app.route("/api/data")
+def api_data_legacy():
+    """Legacy-Endpunkt."""
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({"error": "Datenbankverbindung fehlgeschlagen"}), 500
+
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM sensor_data ORDER BY id DESC LIMIT 50")
+        data = cursor.fetchall()
+        for row in data:
+            if row.get("timestamp"):
+                row["timestamp"] = row["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
+    except pymysql.Error as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+    return jsonify(data)
+
+
+# ==============================================================================
+# SERVER STARTEN
+# ==============================================================================
+
+if __name__ == "__main__":
+    print("\n" + "=" * 60)
+    print("   ASIA RESTAURANT – Flask Dashboard Server")
+    print("   " + "=" * 56)
+    print("   Dashboard:    http://0.0.0.0:5000")
+    print("   API Occupancy: http://0.0.0.0:5000/api/occupancy/current")
+    print("   API Sensoren:  http://0.0.0.0:5000/api/data/latest")
+    print("   API Stats:     http://0.0.0.0:5000/api/data/stats")
+    print("=" * 60 + "\n")
+
+    app.run(host="0.0.0.0", port=5000, debug=True)

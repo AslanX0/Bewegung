@@ -1,0 +1,385 @@
+"""
+===============================================================================
+ TESTDATEN-GENERATOR fuer Asia Restaurant Dashboard
+ Erzeugt realistische Sensordaten fuer 48 Stunden mit data_source='TEST'
+ 
+ Simuliert:
+ - Tagesrhythmus (Morgens ruhig, Mittagsrush, Nachmittag ruhig, Abendrush)
+ - Korrelierte Sensor-Werte (mehr Gaeste = waermer, feuchter, schlechtere Luft)
+ - Zufaellige Variationen fuer Realismus
+ - Personenschaetzung und Klimaempfehlung via PersonEstimator
+===============================================================================
+"""
+
+import pymysql
+import numpy as np
+from datetime import datetime, timedelta
+import sys
+
+# PersonEstimator importieren
+from regressionsanalyse import PersonEstimator
+
+# ==============================================================================
+# DATENBANK-KONFIGURATION
+# ==============================================================================
+db_config = {
+    'host': 'localhost',
+    'port': 3306,
+    'user': 'root',
+    'password': 'root',
+    'database': 'sensor_db',
+    'charset': 'utf8mb4',
+    'cursorclass': pymysql.cursors.DictCursor
+}
+
+
+def get_guest_count(hour, minute):
+    """
+    Simuliert realistische Gaestezahlen fuer ein Asia-Restaurant.
+    
+    Oeffnungszeiten: 11:30 - 15:00 und 17:30 - 22:30
+    Spitzen: ~12:30 (Mittagsrush) und ~19:30 (Abendrush)
+    """
+    t = hour + minute / 60.0
+    
+    # Geschlossen
+    if t < 11.0 or (t > 15.5 and t < 17.0) or t > 23.0:
+        return 0
+    
+    # Mittags-Rush (11:30 - 15:00)
+    if 11.0 <= t <= 15.5:
+        # Glockenform mit Peak bei 12:30
+        peak = 12.5
+        sigma = 0.9
+        base = np.exp(-0.5 * ((t - peak) / sigma) ** 2)
+        guests = int(base * 95)  # Max ~95 Gaeste mittags
+        # Anstiegsphase
+        if t < 11.5:
+            guests = int((t - 11.0) * 20)  # langsam fuellen
+        # Abklingphase  
+        if t > 14.5:
+            guests = max(0, int(guests * (15.5 - t)))
+    
+    # Abend-Rush (17:30 - 22:30)
+    elif 17.0 <= t <= 23.0:
+        peak = 19.5
+        sigma = 1.1
+        base = np.exp(-0.5 * ((t - peak) / sigma) ** 2)
+        guests = int(base * 110)  # Max ~110 Gaeste abends
+        # Anstiegsphase
+        if t < 17.5:
+            guests = int((t - 17.0) * 15)
+        # Abklingphase
+        if t > 21.5:
+            guests = max(0, int(guests * (23.0 - t) / 1.5))
+    else:
+        guests = 0
+    
+    # Zufaellige Variation (+/- 10%)
+    variation = np.random.normal(0, max(1, guests * 0.10))
+    guests = max(0, min(120, int(guests + variation)))
+    
+    return guests
+
+
+def simulate_sensors(guests, base_temp=22.0, base_humidity=40.0, 
+                     base_gas=200000, base_pressure=1013.25):
+    """
+    Simuliert Sensorwerte basierend auf der Gaestezahl.
+    
+    Physikalische Zusammenhaenge:
+    - Mehr Gaeste -> hoehere Temperatur
+    - Mehr Gaeste -> hoehere Feuchtigkeit
+    - Mehr Gaeste -> niedrigerer Gaswiderstand
+    - Druck: leichte zufaellige Schwankungen (wetterabhaengig)
+    """
+    # Temperatur: +0.04-0.06 C pro Person + Rauschen
+    temp_per_person = np.random.uniform(0.04, 0.06)
+    temperature = base_temp + guests * temp_per_person + np.random.normal(0, 0.3)
+    temperature = round(max(18.0, min(32.0, temperature)), 2)
+    
+    # Feuchtigkeit: +0.12-0.18 %RH pro Person + Rauschen
+    hum_per_person = np.random.uniform(0.12, 0.18)
+    humidity = base_humidity + guests * hum_per_person + np.random.normal(0, 1.5)
+    humidity = round(max(30.0, min(75.0, humidity)), 2)
+    
+    # Gaswiderstand: sinkt logarithmisch mit Gaesten
+    if guests > 0:
+        # Halbierung bei ca. 60 Gaesten
+        gas_factor = np.exp(-np.log(2) / 60 * guests)
+        gas_resistance = base_gas * gas_factor + np.random.normal(0, 5000)
+    else:
+        gas_resistance = base_gas + np.random.normal(0, 3000)
+    gas_resistance = round(max(20000, min(250000, gas_resistance)), 2)
+    
+    # Druck: langsame Aenderung (Wetter), kaum von Gaesten beeinflusst
+    pressure = base_pressure + np.random.normal(0, 0.5)
+    pressure = round(max(990, min(1035, pressure)), 2)
+    
+    # Bewegung: Wahrscheinlichkeit steigt mit Gaestezahl
+    if guests == 0:
+        movement = False
+    elif guests < 10:
+        movement = np.random.random() < 0.3
+    elif guests < 40:
+        movement = np.random.random() < 0.6
+    elif guests < 80:
+        movement = np.random.random() < 0.85
+    else:
+        movement = np.random.random() < 0.95
+    
+    return {
+        'temperature': temperature,
+        'humidity': humidity,
+        'gas_resistance': gas_resistance,
+        'pressure': pressure,
+        'movement_detected': movement
+    }
+
+
+def generate_test_data(hours=48, interval_minutes=5):
+    """
+    Generiert Testdaten fuer die angegebene Anzahl Stunden.
+    
+    Args:
+        hours: Anzahl Stunden zurueck von jetzt
+        interval_minutes: Messintervall in Minuten
+    
+    Returns:
+        Liste von Datensaetzen
+    """
+    estimator = PersonEstimator()
+    estimator.set_baseline(temperature=22.0, humidity=40.0, gas_resistance=200000)
+    
+    data = []
+    now = datetime.now()
+    start = now - timedelta(hours=hours)
+    current = start
+    
+    # Wetter-Trend (langsam aendernd)
+    base_pressure = 1013.25 + np.random.uniform(-5, 5)
+    pressure_trend = np.random.uniform(-0.1, 0.1)  # hPa pro Stunde
+    
+    total_points = int(hours * 60 / interval_minutes)
+    print(f"Generiere {total_points} Datenpunkte ueber {hours} Stunden...")
+    
+    for i in range(total_points):
+        hour = current.hour
+        minute = current.minute
+        
+        # Gaestezahl simulieren
+        guests = get_guest_count(hour, minute)
+        
+        # Wetterdruck aktualisieren
+        hours_elapsed = i * interval_minutes / 60
+        current_pressure = base_pressure + pressure_trend * hours_elapsed
+        # Gelegentlich Trend aendern
+        if np.random.random() < 0.01:
+            pressure_trend = np.random.uniform(-0.1, 0.1)
+        
+        # Sensordaten simulieren
+        sensors = simulate_sensors(
+            guests, 
+            base_pressure=current_pressure
+        )
+        
+        # Personenschaetzung durchfuehren
+        result = estimator.estimate(
+            temperature=sensors['temperature'],
+            humidity=sensors['humidity'],
+            gas_resistance=sensors['gas_resistance'],
+            movement_detected=sensors['movement_detected']
+        )
+        
+        record = {
+            'timestamp': current,
+            'temperature': sensors['temperature'],
+            'pressure': sensors['pressure'],
+            'humidity': sensors['humidity'],
+            'gas_resistance': sensors['gas_resistance'],
+            'movement_detected': sensors['movement_detected'],
+            'estimated_occupancy': result['estimated_persons'],
+            'ac_recommendation': result['climate_recommendation']['level'],
+            'data_source': 'TEST',
+            # Zum Vergleich (wird nicht in DB gespeichert)
+            '_actual_guests': guests
+        }
+        data.append(record)
+        
+        current += timedelta(minutes=interval_minutes)
+    
+    return data
+
+
+def insert_test_data(data):
+    """Fuegt die Testdaten in die Datenbank ein."""
+    try:
+        conn = pymysql.connect(**db_config)
+        cursor = conn.cursor()
+        print(f"Datenbankverbindung hergestellt.")
+    except pymysql.Error as e:
+        print(f"Datenbankfehler: {e}")
+        sys.exit(1)
+    
+    # Tabelle sicherstellen (inkl. neue Spalten)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS sensor_data (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        timestamp DATETIME NOT NULL,
+        temperature FLOAT NOT NULL,
+        pressure FLOAT,
+        humidity FLOAT,
+        gas_resistance FLOAT,
+        movement_detected BOOLEAN NOT NULL,
+        estimated_occupancy INT DEFAULT NULL,
+        ac_recommendation INT DEFAULT NULL,
+        data_source CHAR(4) NOT NULL DEFAULT 'REAL'
+    )
+    """)
+    
+    # Neue Spalten hinzufuegen falls noetig
+    for col_sql in [
+        "ALTER TABLE sensor_data ADD COLUMN IF NOT EXISTS estimated_occupancy INT DEFAULT NULL",
+        "ALTER TABLE sensor_data ADD COLUMN IF NOT EXISTS ac_recommendation INT DEFAULT NULL",
+        "ALTER TABLE sensor_data ADD COLUMN IF NOT EXISTS data_source CHAR(4) NOT NULL DEFAULT 'REAL'"
+    ]:
+        try:
+            cursor.execute(col_sql)
+        except pymysql.Error:
+            pass
+    
+    conn.commit()
+    
+    # Bestehende Testdaten loeschen (optional)
+    cursor.execute("DELETE FROM sensor_data WHERE data_source = 'TEST'")
+    deleted = cursor.rowcount
+    if deleted > 0:
+        print(f"  {deleted} alte Testdaten geloescht.")
+    conn.commit()
+    
+    # Neue Testdaten einfuegen
+    insert_sql = """
+    INSERT INTO sensor_data 
+        (timestamp, temperature, pressure, humidity, gas_resistance, 
+         movement_detected, estimated_occupancy, ac_recommendation, data_source)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+    """
+    
+    batch = []
+    for r in data:
+        batch.append((
+            r['timestamp'], r['temperature'], r['pressure'],
+            r['humidity'], r['gas_resistance'], r['movement_detected'],
+            r['estimated_occupancy'], r['ac_recommendation'], r['data_source']
+        ))
+    
+    cursor.executemany(insert_sql, batch)
+    conn.commit()
+    print(f"  {len(batch)} Testdaten eingefuegt.")
+    
+    # Zusammenfassung
+    cursor.execute("""
+        SELECT 
+            data_source, COUNT(*) as cnt,
+            ROUND(AVG(temperature), 1) as avg_temp,
+            ROUND(AVG(estimated_occupancy), 0) as avg_occ,
+            MAX(estimated_occupancy) as max_occ
+        FROM sensor_data 
+        GROUP BY data_source
+    """)
+    print("\n--- Datenbank-Zusammenfassung ---")
+    print(f"{'Quelle':<8} {'Anzahl':>8} {'Avg Temp':>10} {'Avg Gaeste':>12} {'Max Gaeste':>12}")
+    print("-" * 55)
+    for row in cursor.fetchall():
+        src = row['data_source']
+        print(f"{src:<8} {row['cnt']:>8} {row['avg_temp']:>9.1f}C "
+              f"{row['avg_occ'] or 0:>11.0f} {row['max_occ'] or 0:>11}")
+    
+    conn.close()
+
+
+def print_sample(data, count=10):
+    """Gibt eine Stichprobe der generierten Daten aus."""
+    print(f"\n--- Stichprobe ({count} von {len(data)} Datenpunkten) ---\n")
+    print(f"{'Zeit':<20} {'Temp':>7} {'Feucht':>8} {'Gas':>9} {'Bew.':<5} "
+          f"{'Gaeste':>7} {'AC':>4} {'(real)':>7}")
+    print("-" * 80)
+    
+    # Gleichmaessig verteilt
+    step = max(1, len(data) // count)
+    for i in range(0, len(data), step):
+        if count <= 0:
+            break
+        r = data[i]
+        mov = "Ja" if r['movement_detected'] else "Nein"
+        print(f"{r['timestamp'].strftime('%d.%m. %H:%M'):<20} "
+              f"{r['temperature']:>6.1f}C {r['humidity']:>7.1f}% "
+              f"{r['gas_resistance']/1000:>7.0f}kO {mov:<5} "
+              f"{r['estimated_occupancy']:>7} {r['ac_recommendation']:>4} "
+              f"{r['_actual_guests']:>7}")
+        count -= 1
+
+
+# ==============================================================================
+# HAUPTPROGRAMM
+# ==============================================================================
+
+if __name__ == "__main__":
+    print("\n" + "=" * 60)
+    print("   TESTDATEN-GENERATOR - Asia Restaurant Dashboard")
+    print("=" * 60)
+    
+    print("\nOptionen:")
+    print("  1 - Testdaten generieren und in DB einfuegen (48h)")
+    print("  2 - Nur Vorschau generieren (kein DB-Zugriff)")
+    print("  3 - Bestehende Testdaten loeschen")
+    print("  0 - Beenden")
+    
+    wahl = input("\nWahl: ").strip()
+    
+    if wahl == "1":
+        data = generate_test_data(hours=48, interval_minutes=5)
+        print_sample(data, count=15)
+        
+        print("\n")
+        confirm = input("Daten in Datenbank einfuegen? (j/n): ").strip().lower()
+        if confirm == 'j':
+            insert_test_data(data)
+            print("\nTestdaten erfolgreich eingefuegt!")
+        else:
+            print("Abgebrochen.")
+    
+    elif wahl == "2":
+        data = generate_test_data(hours=48, interval_minutes=5)
+        print_sample(data, count=20)
+        
+        # Statistiken
+        temps = [r['temperature'] for r in data]
+        occs = [r['estimated_occupancy'] for r in data]
+        actuals = [r['_actual_guests'] for r in data]
+        
+        print(f"\n--- Statistiken ---")
+        print(f"Temperatur:  {min(temps):.1f} - {max(temps):.1f}C (Avg: {np.mean(temps):.1f}C)")
+        print(f"Schaetzung:  {min(occs)} - {max(occs)} Gaeste (Avg: {np.mean(occs):.0f})")
+        print(f"Tatsaechlich:{min(actuals)} - {max(actuals)} Gaeste (Avg: {np.mean(actuals):.0f})")
+        
+        # Abweichung
+        diffs = [abs(o - a) for o, a in zip(occs, actuals)]
+        print(f"Abweichung:  Avg {np.mean(diffs):.1f} | Max {max(diffs)}")
+    
+    elif wahl == "3":
+        try:
+            conn = pymysql.connect(**db_config)
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM sensor_data WHERE data_source = 'TEST'")
+            deleted = cursor.rowcount
+            conn.commit()
+            conn.close()
+            print(f"\n{deleted} Testdaten geloescht.")
+        except pymysql.Error as e:
+            print(f"Fehler: {e}")
+    
+    elif wahl == "0":
+        print("Auf Wiedersehen!")
+    else:
+        print("Ungueltige Eingabe!")
