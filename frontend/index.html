@@ -28,8 +28,8 @@
     <button class="nav-btn active" data-tab="dashboard">
         <span class="mdi mdi-view-dashboard"></span> Dashboard
     </button>
-    <button class="nav-btn" data-tab="occupancy">
-        <span class="mdi mdi-account-group"></span> Belegung & Klima
+    <button class="nav-btn" data-tab="regression">
+        <span class="mdi mdi-chart-scatter-plot-hexbin"></span> Regression
     </button>
     <button class="nav-btn" data-tab="sensors">
         <span class="mdi mdi-thermometer"></span> Sensoren
@@ -44,20 +44,6 @@
     <section id="tab-dashboard" class="tab-content active">
         <div class="stats-grid">
             <div class="stat-card">
-                <div class="stat-icon"><span class="mdi mdi-account-group"></span></div>
-                <div class="stat-info">
-                    <span class="stat-value" id="currentOccupancy">--</span>
-                    <span class="stat-label">Personen</span>
-                </div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-icon"><span class="mdi mdi-snowflake"></span></div>
-                <div class="stat-info">
-                    <span class="stat-value" id="acLevel">--</span>
-                    <span class="stat-label">AC Stufe</span>
-                </div>
-            </div>
-            <div class="stat-card">
                 <div class="stat-icon"><span class="mdi mdi-thermometer"></span></div>
                 <div class="stat-info">
                     <span class="stat-value" id="currentTemp">--</span>
@@ -71,75 +57,117 @@
                     <span class="stat-label">Luftfeuchtigkeit</span>
                 </div>
             </div>
+            <div class="stat-card">
+                <div class="stat-icon"><span class="mdi mdi-molecule-co2"></span></div>
+                <div class="stat-info">
+                    <span class="stat-value" id="currentVOC">--</span>
+                    <span class="stat-label">VOC (Gasresistenz)</span>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon"><span class="mdi mdi-account-group"></span></div>
+                <div class="stat-info">
+                    <span class="stat-value" id="currentOccupancy">--</span>
+                    <span class="stat-label">Gesch. Personen</span>
+                    <span class="stat-detail" id="currentOccPercent">--</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <h3><span class="mdi mdi-chart-line"></span> Temperaturverlauf (24h)</h3>
+            </div>
+            <div class="card-body chart-container">
+                <canvas id="chartTemperature"></canvas>
+            </div>
         </div>
 
         <div class="charts-grid">
             <div class="card">
                 <div class="card-header">
-                    <h3><span class="mdi mdi-chart-line"></span> Belegung (24h)</h3>
+                    <h3><span class="mdi mdi-chart-line"></span> Luftfeuchtigkeit (24h)</h3>
                 </div>
-                <div class="card-body">
-                    <canvas id="chartOccupancy"></canvas>
+                <div class="card-body chart-container">
+                    <canvas id="chartHumidity"></canvas>
                 </div>
             </div>
             <div class="card">
                 <div class="card-header">
-                    <h3><span class="mdi mdi-chart-line"></span> Temperatur & Feuchtigkeit (24h)</h3>
+                    <h3><span class="mdi mdi-chart-line"></span> Personenanzahl (24h)</h3>
                 </div>
-                <div class="card-body">
-                    <canvas id="chartTempHumidity"></canvas>
+                <div class="card-body chart-container">
+                    <canvas id="chartOccupancy"></canvas>
                 </div>
             </div>
         </div>
     </section>
 
-    <!-- Occupancy & Climate Tab -->
-    <section id="tab-occupancy" class="tab-content">
-        <div class="stats-grid wide">
-            <div class="stat-card large">
-                <div class="stat-icon big"><span class="mdi mdi-account-group"></span></div>
+    <!-- Regression Tab -->
+    <section id="tab-regression" class="tab-content">
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-icon"><span class="mdi mdi-chart-timeline-variant"></span></div>
                 <div class="stat-info">
-                    <span class="stat-value big" id="occPersons">--</span>
-                    <span class="stat-label">Geschaetzte Personen</span>
-                    <div class="progress-bar">
-                        <div class="progress-fill" id="occProgressBar"></div>
-                    </div>
-                    <span class="stat-detail" id="occPercent">-- % Auslastung</span>
+                    <span class="stat-label">Steigung (a)</span>
+                    <span class="stat-value" id="regSlope">--</span>
                 </div>
             </div>
-            <div class="stat-card large">
-                <div class="stat-icon big"><span class="mdi mdi-snowflake"></span></div>
+            <div class="stat-card">
+                <div class="stat-icon"><span class="mdi mdi-ray-start-end"></span></div>
                 <div class="stat-info">
-                    <span class="stat-value big" id="occAcLevel">--</span>
-                    <span class="stat-label">Klimaanlage Empfehlung</span>
-                    <span class="stat-detail" id="occAcNote">--</span>
+                    <span class="stat-label">Achsenabschnitt (b)</span>
+                    <span class="stat-value" id="regIntercept">--</span>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon"><span class="mdi mdi-check-decagram"></span></div>
+                <div class="stat-info">
+                    <span class="stat-label">R² (Bestimmtheitsmass)</span>
+                    <span class="stat-value" id="regR2">--</span>
+                    <span class="stat-detail" id="regR2Detail">--</span>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon"><span class="mdi mdi-database"></span></div>
+                <div class="stat-info">
+                    <span class="stat-label">Datenpunkte</span>
+                    <span class="stat-value" id="regSamples">--</span>
+                    <span class="stat-detail" id="regTrainedAt">--</span>
                 </div>
             </div>
         </div>
 
         <div class="card">
             <div class="card-header">
-                <h3><span class="mdi mdi-chart-areaspline"></span> Belegungsverlauf</h3>
-                <div class="chart-controls">
-                    <button class="btn-sm active" data-hours="6">6h</button>
-                    <button class="btn-sm" data-hours="12">12h</button>
-                    <button class="btn-sm" data-hours="24">24h</button>
-                    <button class="btn-sm" data-hours="48">48h</button>
-                </div>
+                <h3><span class="mdi mdi-chart-scatter-plot-hexbin"></span> Scatterplot: Personen vs. Temperatur</h3>
+                <span class="stat-detail" id="regFormula">y = a * x + b</span>
             </div>
-            <div class="card-body">
-                <canvas id="chartOccupancyDetail"></canvas>
+            <div class="card-body chart-container-large">
+                <canvas id="chartScatter"></canvas>
             </div>
         </div>
 
         <div class="card">
             <div class="card-header">
-                <h3><span class="mdi mdi-information-outline"></span> Modell-Status</h3>
+                <h3><span class="mdi mdi-crystal-ball"></span> Temperaturvorhersagen</h3>
             </div>
             <div class="card-body">
-                <div class="info-grid" id="estimatorStatus">
-                    <p>Lade...</p>
+                <div class="predictions-grid" id="predictionsGrid">
+                    <p>Modell noch nicht trainiert...</p>
                 </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <h3><span class="mdi mdi-cog"></span> Modell-Verwaltung</h3>
+            </div>
+            <div class="card-body">
+                <button class="btn-primary" id="btnRetrain">
+                    <span class="mdi mdi-refresh"></span> Modell neu trainieren (letzte 48h)
+                </button>
+                <span class="stat-detail" id="retrainStatus"></span>
             </div>
         </div>
     </section>
@@ -164,18 +192,17 @@
                 </div>
             </div>
             <div class="stat-card">
-                <div class="stat-icon"><span class="mdi mdi-gauge"></span></div>
+                <div class="stat-icon"><span class="mdi mdi-molecule-co2"></span></div>
                 <div class="stat-info">
-                    <span class="stat-value" id="sensorPressure">--</span>
-                    <span class="stat-label">Luftdruck</span>
-                    <span class="stat-detail" id="sensorPressureAvg">--</span>
+                    <span class="stat-value" id="sensorGas">--</span>
+                    <span class="stat-label">VOC / Gasresistenz</span>
                 </div>
             </div>
             <div class="stat-card">
-                <div class="stat-icon"><span class="mdi mdi-run"></span></div>
+                <div class="stat-icon"><span class="mdi mdi-radar"></span></div>
                 <div class="stat-info">
                     <span class="stat-value" id="sensorMovement">--</span>
-                    <span class="stat-label">Bewegung (5 Min)</span>
+                    <span class="stat-label">Bewegung (RCWL-0516)</span>
                     <span class="stat-detail" id="sensorMovementStatus">--</span>
                 </div>
             </div>
@@ -183,9 +210,9 @@
 
         <div class="card">
             <div class="card-header">
-                <h3><span class="mdi mdi-molecule-co2"></span> Gasresistenz (24h)</h3>
+                <h3><span class="mdi mdi-molecule-co2"></span> VOC / Gasresistenz (24h)</h3>
             </div>
-            <div class="card-body">
+            <div class="card-body chart-container">
                 <canvas id="chartGas"></canvas>
             </div>
         </div>
@@ -194,7 +221,7 @@
             <div class="card-header">
                 <h3><span class="mdi mdi-gauge"></span> Luftdruck (24h)</h3>
             </div>
-            <div class="card-body">
+            <div class="card-body chart-container">
                 <canvas id="chartPressure"></canvas>
             </div>
         </div>
@@ -213,17 +240,15 @@
                         <tr>
                             <th>ID</th>
                             <th>Zeitstempel</th>
-                            <th>Temp (C)</th>
-                            <th>Druck (hPa)</th>
+                            <th>Temp (°C)</th>
                             <th>Feucht. (%)</th>
-                            <th>Gas (Ohm)</th>
+                            <th>VOC (Ohm)</th>
                             <th>Bewegung</th>
-                            <th>Personen</th>
-                            <th>AC</th>
+                            <th>Gesch. Personen</th>
                         </tr>
                     </thead>
                     <tbody id="tableBody">
-                        <tr><td colspan="9">Lade Daten...</td></tr>
+                        <tr><td colspan="7">Lade Daten...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -237,7 +262,7 @@
 </main>
 
 <footer>
-    <p>Asia Restaurant Sensor System &mdash; Letzte Aktualisierung: <span id="lastUpdate">--</span></p>
+    <p>Asia Restaurant - CPS Sensor System &mdash; Letzte Aktualisierung: <span id="lastUpdate">--</span></p>
 </footer>
 
 <script src="/static/js/dashboard.js"></script>

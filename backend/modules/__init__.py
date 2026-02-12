@@ -1,1 +1,1 @@
-from .regressionsanalyse import PersonEstimator
+from .regressionsanalyse import PersonEstimator, TemperatureRegression

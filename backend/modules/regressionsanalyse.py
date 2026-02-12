@@ -1,9 +1,10 @@
-# Personenschaetzung mittels Regressionsanalyse (BME680 + PIR Sensordaten, 0-120 Personen)
+# Personenschaetzung (VOC-Baseline) + Lineare Regression (Personen -> Temperatur)
+# BME680 (Temperatur, Luftfeuchtigkeit, VOC) + RCWL-0516 (Bewegung/Plausibilitaet)
 
 import numpy as np
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 
 CALIBRATION_FILE = os.path.join(os.path.dirname(__file__), "calibration.json")
 
@@ -11,27 +12,18 @@ MAX_PERSONS = 120
 MIN_PERSONS = 0
 
 DEFAULT_BASELINE = {
-    "temperature": 22.0,
-    "humidity": 40.0,
     "gas_resistance": 200000,
     "calibrated": False,
     "calibration_date": None
 }
 
-PHYSICAL_MODEL = {
-    "temp_per_person": 0.05,
-    "humidity_per_person": 0.15,
-    "gas_half_persons": 60,
-    "motion_weight": 5.0
-}
-
 
 class PersonEstimator:
+    """Schaetzt Personenanzahl aus VOC (gas_resistance) mit Baseline-Kalibrierung.
+    Bewegungssensor (RCWL-0516) dient als Plausibilitaetspruefung."""
 
     def __init__(self):
         self.baseline = DEFAULT_BASELINE.copy()
-        self.trained_coefficients = None
-        self.training_data = []
         self._load_calibration()
 
     def _load_calibration(self):
@@ -40,316 +32,145 @@ class PersonEstimator:
                 with open(CALIBRATION_FILE, "r") as f:
                     data = json.load(f)
                     self.baseline = data.get("baseline", DEFAULT_BASELINE.copy())
-                    self.trained_coefficients = data.get("coefficients", None)
-                    self.training_data = data.get("training_data", [])
-                    print(f"Kalibrierung geladen ({len(self.training_data)} Trainingspunkte)")
+                    print(f"VOC-Baseline geladen: {self.baseline.get('gas_resistance')} Ohm")
             except Exception as e:
                 print(f"Kalibrierungsdatei fehlerhaft: {e}")
 
     def _save_calibration(self):
-        data = {
-            "baseline": self.baseline,
-            "coefficients": self.trained_coefficients,
-            "training_data": self.training_data
-        }
+        data = {"baseline": self.baseline}
         with open(CALIBRATION_FILE, "w") as f:
             json.dump(data, f, indent=2, default=str)
 
-    def set_baseline(self, temperature, humidity, gas_resistance):
+    def set_baseline(self, gas_resistance):
+        """VOC-Baseline bei leerem Raum setzen."""
         self.baseline = {
-            "temperature": temperature,
-            "humidity": humidity,
             "gas_resistance": gas_resistance,
             "calibrated": True,
             "calibration_date": datetime.now().isoformat()
         }
         self._save_calibration()
-        print(f"Baseline gesetzt: {temperature}C / {humidity}%RH / {gas_resistance} Ohm")
+        print(f"VOC-Baseline gesetzt: {gas_resistance} Ohm")
 
-    def _estimate_physical(self, temperature, humidity, gas_resistance,
-                           movement_detected, movement_rate=None):
-        estimates = {}
-        weights = {}
+    def estimate(self, gas_resistance, movement_detected=False):
+        """Schaetzt Personenanzahl aus VOC-Wert mit Radar-Plausibilitaet.
 
-        delta_temp = temperature - self.baseline["temperature"]
-        if delta_temp > 0:
-            estimates["temperature"] = delta_temp / PHYSICAL_MODEL["temp_per_person"]
-            weights["temperature"] = 0.25
+        Formel: Wenn Gas sinkt gegenueber Baseline -> mehr Personen.
+        gas_ratio = aktuell / baseline (< 1.0 = mehr VOC = mehr Personen)
+        Exponentielles Modell: persons = -ln(gas_ratio) / k
+        wobei k = ln(2) / 60 (bei 60 Personen halbiert sich der Gaswiderstand)
+        """
+        if not gas_resistance or not self.baseline.get("gas_resistance"):
+            return {"estimated_persons": 0, "gas_ratio": None,
+                    "movement_plausible": movement_detected}
+
+        baseline_gas = self.baseline["gas_resistance"]
+        gas_ratio = gas_resistance / baseline_gas
+
+        if gas_ratio < 1.0:
+            k = np.log(2) / 60
+            raw_persons = -np.log(gas_ratio) / k
         else:
-            estimates["temperature"] = 0
-            weights["temperature"] = 0.10
+            raw_persons = 0
 
-        delta_humidity = humidity - self.baseline["humidity"]
-        if delta_humidity > 0:
-            estimates["humidity"] = delta_humidity / PHYSICAL_MODEL["humidity_per_person"]
-            weights["humidity"] = 0.30
-        else:
-            estimates["humidity"] = 0
-            weights["humidity"] = 0.10
+        # Plausibilitaetspruefung: Wenn kein Radar-Signal und VOC sagt > 5 Personen
+        # -> reduziere Schaetzung (koennte Stoerquelle sein)
+        if not movement_detected and raw_persons > 5:
+            raw_persons *= 0.3
 
-        if gas_resistance and self.baseline["gas_resistance"]:
-            gas_ratio = gas_resistance / self.baseline["gas_resistance"]
-            if gas_ratio < 1.0:
-                k = np.log(2) / PHYSICAL_MODEL["gas_half_persons"]
-                est_gas = -np.log(gas_ratio) / k
-                estimates["gas"] = max(0, est_gas)
-                weights["gas"] = 0.35
-            else:
-                estimates["gas"] = 0
-                weights["gas"] = 0.10
-        else:
-            estimates["gas"] = 0
-            weights["gas"] = 0.0
-
-        if movement_rate is not None:
-            est_motion = movement_rate * MAX_PERSONS * 0.8
-            estimates["motion"] = est_motion
-            weights["motion"] = 0.10
-        elif movement_detected:
-            estimates["motion"] = PHYSICAL_MODEL["motion_weight"]
-            weights["motion"] = 0.05
-        else:
-            estimates["motion"] = 0
-            weights["motion"] = 0.05
-
-        total_weight = sum(weights.values())
-        if total_weight > 0:
-            weighted_sum = sum(estimates[k] * weights[k] for k in estimates)
-            raw_estimate = weighted_sum / total_weight
-        else:
-            raw_estimate = 0
-
-        final_estimate = int(np.clip(round(raw_estimate), MIN_PERSONS, MAX_PERSONS))
+        estimated = int(np.clip(round(raw_persons), MIN_PERSONS, MAX_PERSONS))
 
         return {
-            "estimated_persons": final_estimate,
-            "confidence": self._calculate_confidence(estimates, weights),
-            "model": "physical",
-            "details": {
-                "delta_temperature": round(delta_temp, 2),
-                "delta_humidity": round(delta_humidity, 2),
-                "gas_ratio": round(gas_resistance / self.baseline["gas_resistance"], 3)
-                             if gas_resistance and self.baseline["gas_resistance"] else None,
-                "individual_estimates": {k: round(v, 1) for k, v in estimates.items()},
-                "weights": weights
-            },
-            "baseline_calibrated": self.baseline["calibrated"],
-            "climate_recommendation": self._climate_recommendation(final_estimate)
-        }
-
-    def _calculate_confidence(self, estimates, weights):
-        values = [v for v in estimates.values() if v > 0]
-        if len(values) < 2:
-            return 30
-
-        mean = np.mean(values)
-        if mean == 0:
-            return 50
-        cv = np.std(values) / mean
-        confidence = max(20, min(95, int(100 - cv * 50)))
-
-        if self.baseline["calibrated"]:
-            confidence = min(95, confidence + 10)
-        if self.trained_coefficients:
-            confidence = min(95, confidence + 15)
-
-        return confidence
-
-    def _estimate_trained(self, temperature, humidity, gas_resistance,
-                          movement_detected, movement_rate=None):
-        if not self.trained_coefficients:
-            return self._estimate_physical(
-                temperature, humidity, gas_resistance,
-                movement_detected, movement_rate)
-
-        coeff = self.trained_coefficients
-        delta_temp = temperature - self.baseline["temperature"]
-        delta_humidity = humidity - self.baseline["humidity"]
-        gas_ratio = (gas_resistance / self.baseline["gas_resistance"]
-                     if gas_resistance and self.baseline["gas_resistance"] else 1.0)
-        motion_val = float(movement_detected) if movement_rate is None else movement_rate
-
-        raw_estimate = (
-            coeff["intercept"]
-            + coeff["beta_temp"] * delta_temp
-            + coeff["beta_humidity"] * delta_humidity
-            + coeff["beta_gas"] * gas_ratio
-            + coeff["beta_motion"] * motion_val
-        )
-
-        final_estimate = int(np.clip(round(raw_estimate), MIN_PERSONS, MAX_PERSONS))
-
-        return {
-            "estimated_persons": final_estimate,
-            "confidence": min(95, 60 + len(self.training_data)),
-            "model": "trained_regression",
-            "details": {
-                "delta_temperature": round(delta_temp, 2),
-                "delta_humidity": round(delta_humidity, 2),
-                "gas_ratio": round(gas_ratio, 3),
-                "coefficients": coeff,
-                "training_samples": len(self.training_data)
-            },
-            "baseline_calibrated": self.baseline["calibrated"],
-            "climate_recommendation": self._climate_recommendation(final_estimate)
-        }
-
-    def estimate(self, temperature, humidity, gas_resistance=None,
-                 movement_detected=False, movement_rate=None):
-        if self.trained_coefficients and len(self.training_data) >= 10:
-            return self._estimate_trained(
-                temperature, humidity, gas_resistance,
-                movement_detected, movement_rate)
-
-        return self._estimate_physical(
-            temperature, humidity, gas_resistance,
-            movement_detected, movement_rate)
-
-    def add_training_point(self, actual_persons, temperature, humidity,
-                           gas_resistance=None, movement_detected=False):
-        if not (MIN_PERSONS <= actual_persons <= MAX_PERSONS):
-            raise ValueError(f"Personenzahl muss zwischen {MIN_PERSONS} und {MAX_PERSONS} liegen")
-
-        point = {
-            "timestamp": datetime.now().isoformat(),
-            "actual_persons": actual_persons,
-            "temperature": temperature,
-            "humidity": humidity,
-            "gas_resistance": gas_resistance,
-            "movement_detected": movement_detected
-        }
-        self.training_data.append(point)
-        self._save_calibration()
-
-        if len(self.training_data) >= 10:
-            self.train()
-
-        print(f"Trainingspunkt hinzugefuegt ({len(self.training_data)} gesamt)")
-
-    def train(self):
-        if len(self.training_data) < 10:
-            print(f"Mindestens 10 Trainingspunkte noetig (aktuell: {len(self.training_data)})")
-            return None
-
-        X = []
-        y = []
-
-        for point in self.training_data:
-            delta_temp = point["temperature"] - self.baseline["temperature"]
-            delta_humidity = point["humidity"] - self.baseline["humidity"]
-            gas_ratio = (point["gas_resistance"] / self.baseline["gas_resistance"]
-                         if point.get("gas_resistance") and self.baseline["gas_resistance"]
-                         else 1.0)
-            motion = float(point.get("movement_detected", False))
-            X.append([1.0, delta_temp, delta_humidity, gas_ratio, motion])
-            y.append(point["actual_persons"])
-
-        X = np.array(X)
-        y = np.array(y)
-
-        try:
-            XtX_inv = np.linalg.inv(X.T @ X)
-            beta = XtX_inv @ X.T @ y
-        except np.linalg.LinAlgError:
-            beta = np.linalg.lstsq(X, y, rcond=None)[0]
-
-        self.trained_coefficients = {
-            "intercept": round(float(beta[0]), 4),
-            "beta_temp": round(float(beta[1]), 4),
-            "beta_humidity": round(float(beta[2]), 4),
-            "beta_gas": round(float(beta[3]), 4),
-            "beta_motion": round(float(beta[4]), 4)
-        }
-
-        y_pred = X @ beta
-        ss_res = np.sum((y - y_pred) ** 2)
-        ss_tot = np.sum((y - np.mean(y)) ** 2)
-        r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
-
-        self.trained_coefficients["r_squared"] = round(float(r_squared), 4)
-        self.trained_coefficients["n_samples"] = len(self.training_data)
-        self.trained_coefficients["trained_at"] = datetime.now().isoformat()
-
-        self._save_calibration()
-        print(f"Modell trainiert (R2 = {r_squared:.4f}, n = {len(self.training_data)})")
-        return self.trained_coefficients
-
-    def _climate_recommendation(self, persons):
-        if persons <= 20:
-            level, label = 1, "Minimal"
-        elif persons <= 45:
-            level, label = 2, "Niedrig"
-        elif persons <= 70:
-            level, label = 3, "Mittel"
-        elif persons <= 95:
-            level, label = 4, "Hoch"
-        else:
-            level, label = 5, "Maximal"
-
-        return {
-            "level": level,
-            "label": label,
-            "persons_range": f"{max(0, (level-1)*25-4)}-{min(120, level*25-5) if level < 5 else 120}",
-            "note": (
-                f"Klimaanlage laeuft dauerhaft auf Stufe 3. "
-                f"Empfohlene Stufe basierend auf ~{persons} Personen: Stufe {level} ({label})."
-                + (" -> Stufe reduzieren spart Energie!" if level < 3 else "")
-                + (" -> Stufe erhoehen empfohlen!" if level > 3 else "")
-            )
+            "estimated_persons": estimated,
+            "gas_ratio": round(gas_ratio, 4),
+            "movement_detected": movement_detected,
+            "movement_plausible": movement_detected or estimated <= 5,
+            "baseline_calibrated": self.baseline.get("calibrated", False)
         }
 
     def get_status(self):
         return {
             "baseline": self.baseline,
-            "model_type": "trained_regression" if self.trained_coefficients else "physical",
-            "training_samples": len(self.training_data),
-            "coefficients": self.trained_coefficients,
-            "min_samples_for_training": 10,
-            "ready_for_training": len(self.training_data) >= 10
+            "max_persons": MAX_PERSONS
         }
 
-    def get_movement_rate(self, cursor, minutes=30):
-        try:
-            cursor.execute("""
-                SELECT
-                    COUNT(*) as total,
-                    SUM(CASE WHEN movement_detected = 1 THEN 1 ELSE 0 END) as motion_count
-                FROM sensor_data
-                WHERE timestamp >= NOW() - INTERVAL %s MINUTE
-            """, (minutes,))
 
-            row = cursor.fetchone()
-            if row:
-                total = row.get("total", 0) if isinstance(row, dict) else row[0]
-                motion = row.get("motion_count", 0) if isinstance(row, dict) else row[1]
-                if total and total > 0:
-                    return (motion or 0) / total
-            return 0.0
-        except Exception as e:
-            print(f"Fehler bei Bewegungsrate: {e}")
-            return 0.0
+class TemperatureRegression:
+    """Lineare Regression: Personenanzahl -> Raumtemperatur.
+    y = a * x + b  (a = Steigung, b = Achsenabschnitt)
+    Trainiert mit Daten der letzten 48 Stunden."""
 
+    def __init__(self):
+        self.slope = None         # a (Steigung)
+        self.intercept = None     # b (Achsenabschnitt)
+        self.r_squared = None     # R²
+        self.n_samples = 0
+        self.trained_at = None
 
-if __name__ == "__main__":
-    print("\n" + "=" * 60)
-    print("   PERSONENSCHAETZUNG - Regressionsanalyse (Test)")
-    print("=" * 60)
+    def train(self, persons_list, temperature_list):
+        """Trainiert lineare Regression mit Messdaten.
+        persons_list: Liste der geschaetzten Personenanzahlen (x)
+        temperature_list: Liste der gemessenen Temperaturen (y)
+        """
+        if len(persons_list) < 3:
+            print(f"Mindestens 3 Datenpunkte noetig (aktuell: {len(persons_list)})")
+            return False
 
-    estimator = PersonEstimator()
-    estimator.set_baseline(temperature=22.0, humidity=40.0, gas_resistance=200000)
+        x = np.array(persons_list, dtype=float)
+        y = np.array(temperature_list, dtype=float)
 
-    print("\n--- Testszenarien ---\n")
+        n = len(x)
+        sum_x = np.sum(x)
+        sum_y = np.sum(y)
+        sum_xy = np.sum(x * y)
+        sum_x2 = np.sum(x ** 2)
 
-    scenarios = [
-        ("Leeres Restaurant", 22.0, 40.0, 200000, False, None),
-        ("Wenige Gaeste (~20)", 23.0, 43.0, 170000, True, 0.3),
-        ("Halbes Restaurant (~60)", 25.0, 49.0, 110000, True, 0.6),
-        ("Volles Restaurant (~100)", 27.5, 55.0, 60000, True, 0.85),
-        ("Ueberfuellt (~120)", 29.0, 62.0, 35000, True, 0.95),
-    ]
+        denominator = n * sum_x2 - sum_x ** 2
+        if denominator == 0:
+            print("Regression nicht moeglich: Alle x-Werte identisch")
+            return False
 
-    for name, temp, hum, gas, mov, rate in scenarios:
-        result = estimator.estimate(temp, hum, gas, mov, rate)
-        print(f"{name:<25} ~{result['estimated_persons']:>3} Personen "
-              f"(Konfidenz: {result['confidence']}%)")
-        print(f"  Klima: {result['climate_recommendation']['note']}\n")
+        self.slope = float((n * sum_xy - sum_x * sum_y) / denominator)
+        self.intercept = float((sum_y - self.slope * sum_x) / n)
+
+        # R² berechnen
+        y_pred = self.slope * x + self.intercept
+        ss_res = np.sum((y - y_pred) ** 2)
+        ss_tot = np.sum((y - np.mean(y)) ** 2)
+        self.r_squared = float(1 - (ss_res / ss_tot)) if ss_tot > 0 else 0.0
+
+        self.n_samples = n
+        self.trained_at = datetime.now().isoformat()
+
+        print(f"Regression trainiert: y = {self.slope:.4f}*x + {self.intercept:.2f} "
+              f"(R² = {self.r_squared:.4f}, n = {n})")
+        return True
+
+    def predict(self, persons):
+        """Sagt Temperatur fuer gegebene Personenanzahl vorher."""
+        if self.slope is None:
+            return None
+        return round(self.slope * persons + self.intercept, 2)
+
+    def predict_scenarios(self):
+        """Vorhersagen fuer 0, 60, 120 Personen."""
+        if self.slope is None:
+            return None
+        return [
+            {"persons": 0, "predicted_temp": self.predict(0),
+             "label": "Leeres Restaurant"},
+            {"persons": 60, "predicted_temp": self.predict(60),
+             "label": "Halbe Auslastung"},
+            {"persons": 120, "predicted_temp": self.predict(120),
+             "label": "Volle Auslastung"}
+        ]
+
+    def get_status(self):
+        return {
+            "trained": self.slope is not None,
+            "slope": round(self.slope, 6) if self.slope is not None else None,
+            "intercept": round(self.intercept, 4) if self.intercept is not None else None,
+            "r_squared": round(self.r_squared, 4) if self.r_squared is not None else None,
+            "n_samples": self.n_samples,
+            "trained_at": self.trained_at,
+            "scenarios": self.predict_scenarios()
+        }

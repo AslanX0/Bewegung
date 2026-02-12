@@ -1,12 +1,11 @@
-// Asia Restaurant - Sensor Dashboard (Chart.js)
+// Asia Restaurant - CPS Sensor Dashboard (Chart.js)
+// Personenschaetzung (VOC) + Lineare Regression (Personen -> Temperatur)
 
-const API = '';
 const REFRESH_INTERVAL = 30000;
 
 let state = {
     page: 1,
     perPage: 20,
-    occupancyHours: 24,
     charts: {}
 };
 
@@ -25,16 +24,6 @@ document.querySelectorAll('.nav-btn').forEach(btn => {
     });
 });
 
-// ── Chart Controls (Occupancy Hours) ──
-document.querySelectorAll('.chart-controls .btn-sm').forEach(btn => {
-    btn.addEventListener('click', () => {
-        document.querySelectorAll('.chart-controls .btn-sm').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        state.occupancyHours = parseInt(btn.dataset.hours);
-        loadOccupancyHistory();
-    });
-});
-
 // ── Pagination ──
 document.getElementById('btnPrev').addEventListener('click', () => {
     if (state.page > 1) { state.page--; loadTable(); }
@@ -44,12 +33,29 @@ document.getElementById('btnNext').addEventListener('click', () => {
     loadTable();
 });
 
+// ── Retrain Button ──
+document.getElementById('btnRetrain').addEventListener('click', async () => {
+    const status = document.getElementById('retrainStatus');
+    status.textContent = 'Training laeuft...';
+    try {
+        const res = await fetch('/api/regression/train', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+            status.textContent = 'Training erfolgreich!';
+            loadRegression();
+        } else {
+            status.textContent = 'Fehler: ' + (data.error || 'Unbekannt');
+        }
+    } catch (e) {
+        status.textContent = 'Verbindungsfehler';
+    }
+});
+
 // ── API Helper ──
 async function fetchApi(endpoint) {
     try {
-        const res = await fetch(API + endpoint);
-        const data = await res.json();
-        return data;
+        const res = await fetch(endpoint);
+        return await res.json();
     } catch (e) {
         console.error('API Fehler:', endpoint, e);
         return null;
@@ -60,13 +66,8 @@ async function fetchApi(endpoint) {
 function setStatus(online) {
     const dot = document.getElementById('statusDot');
     const text = document.getElementById('statusText');
-    if (online) {
-        dot.className = 'status-dot online';
-        text.textContent = 'Verbunden';
-    } else {
-        dot.className = 'status-dot offline';
-        text.textContent = 'Keine Verbindung';
-    }
+    dot.className = 'status-dot ' + (online ? 'online' : 'offline');
+    text.textContent = online ? 'Verbunden' : 'Keine Verbindung';
 }
 
 // ── Create/Update Line Chart ──
@@ -93,14 +94,8 @@ function createLineChart(canvasId, labels, datasets, yTitle) {
                 tooltip: { backgroundColor: '#1a1d27', borderColor: '#2a2d3a', borderWidth: 1 }
             },
             scales: {
-                x: {
-                    ticks: { maxTicksLimit: 12, maxRotation: 0 },
-                    grid: { display: false }
-                },
-                y: {
-                    title: { display: !!yTitle, text: yTitle || '' },
-                    beginAtZero: true
-                }
+                x: { ticks: { maxTicksLimit: 12, maxRotation: 0 }, grid: { display: false } },
+                y: { title: { display: !!yTitle, text: yTitle || '' }, beginAtZero: false }
             },
             elements: {
                 point: { radius: 0, hoverRadius: 4 },
@@ -117,98 +112,33 @@ function formatTime(ts) {
     return d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
 }
 
-// ── Load Dashboard Data ──
+// ── Load Dashboard ──
 async function loadDashboard() {
-    const [occ, stats] = await Promise.all([
-        fetchApi('/api/occupancy/current'),
-        fetchApi('/api/data/stats')
-    ]);
+    const occ = await fetchApi('/api/occupancy/current');
 
     if (occ && occ.success) {
         setStatus(true);
         const d = occ.data;
-        document.getElementById('currentOccupancy').textContent = d.estimated_occupancy ?? '--';
-        document.getElementById('acLevel').textContent = 'Stufe ' + (d.ac_recommendation ?? '--');
+        document.getElementById('currentOccupancy').textContent = d.estimated_persons ?? '--';
+        document.getElementById('currentOccPercent').textContent =
+            (d.occupancy_percent ?? 0).toFixed(1) + ' % Auslastung';
         if (d.sensors) {
             document.getElementById('currentTemp').textContent =
                 d.sensors.temperature != null ? d.sensors.temperature.toFixed(1) + ' °C' : '--';
             document.getElementById('currentHumidity').textContent =
                 d.sensors.humidity != null ? d.sensors.humidity.toFixed(1) + ' %' : '--';
+            document.getElementById('currentVOC').textContent =
+                d.sensors.gas_resistance != null ? Math.round(d.sensors.gas_resistance).toLocaleString() + ' Ω' : '--';
         }
     } else {
         setStatus(false);
-    }
-
-    if (stats && stats.success) {
-        const s = stats.data;
-        document.getElementById('sensorTempRange').textContent =
-            s.min_temp != null ? `Min ${s.min_temp.toFixed(1)} / Max ${s.max_temp.toFixed(1)} °C` : '--';
     }
 
     document.getElementById('lastUpdate').textContent =
         new Date().toLocaleTimeString('de-DE');
 }
 
-// ── Load Occupancy Tab ──
-async function loadOccupancy() {
-    const [occ, est] = await Promise.all([
-        fetchApi('/api/occupancy/current'),
-        fetchApi('/api/estimator/status')
-    ]);
-
-    if (occ && occ.success) {
-        const d = occ.data;
-        document.getElementById('occPersons').textContent = d.estimated_occupancy ?? '--';
-        document.getElementById('occPercent').textContent =
-            (d.occupancy_percent ?? 0).toFixed(1) + ' % Auslastung';
-        document.getElementById('occProgressBar').style.width =
-            Math.min(100, d.occupancy_percent ?? 0) + '%';
-
-        document.getElementById('occAcLevel').textContent = 'Stufe ' + (d.ac_recommendation ?? '--');
-        if (d.climate_recommendation && d.climate_recommendation.note) {
-            document.getElementById('occAcNote').textContent = d.climate_recommendation.note;
-        }
-    }
-
-    if (est && est.success) {
-        const s = est.data;
-        document.getElementById('estimatorStatus').innerHTML = `
-            <div class="info-item">
-                <div class="label">Modell</div>
-                <div class="value">${s.model_type === 'trained_regression' ? 'Trainiert' : 'Physikalisch'}</div>
-            </div>
-            <div class="info-item">
-                <div class="label">Trainingspunkte</div>
-                <div class="value">${s.training_samples} / 10</div>
-            </div>
-            <div class="info-item">
-                <div class="label">Baseline kalibriert</div>
-                <div class="value">${s.baseline.calibrated ? 'Ja' : 'Nein'}</div>
-            </div>
-            <div class="info-item">
-                <div class="label">Baseline Temperatur</div>
-                <div class="value">${s.baseline.temperature} °C</div>
-            </div>
-        `;
-    }
-}
-
-// ── Load Occupancy History Chart ──
-async function loadOccupancyHistory() {
-    const data = await fetchApi('/api/occupancy/history?hours=' + state.occupancyHours);
-    if (!data || !data.success) return;
-
-    const labels = data.data.map(r => formatTime(r.timestamp));
-    createLineChart('chartOccupancyDetail', labels, [{
-        label: 'Personen',
-        data: data.data.map(r => r.estimated_occupancy ?? 0),
-        borderColor: '#c41e3a',
-        backgroundColor: 'rgba(196, 30, 58, 0.1)',
-        fill: true
-    }], 'Personen');
-}
-
-// ── Load Dashboard Charts (24h) ──
+// ── Load Dashboard Charts ──
 async function loadDashboardCharts() {
     const data = await fetchApi('/api/data/history?hours=24&limit=500');
     if (!data || !data.success || !data.data.length) return;
@@ -216,33 +146,147 @@ async function loadDashboardCharts() {
     const rows = data.data;
     const labels = rows.map(r => formatTime(r.timestamp));
 
+    // Temperaturverlauf (Hauptdiagramm laut PDF)
+    createLineChart('chartTemperature', labels, [{
+        label: 'Temperatur (°C)',
+        data: rows.map(r => r.temperature),
+        borderColor: '#ef4444',
+        backgroundColor: 'rgba(239, 68, 68, 0.1)',
+        fill: true
+    }], '°C');
+
+    // Luftfeuchtigkeit
+    createLineChart('chartHumidity', labels, [{
+        label: 'Luftfeuchtigkeit (%)',
+        data: rows.map(r => r.humidity),
+        borderColor: '#3b82f6',
+        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+        fill: true
+    }], '%');
+
+    // Personenanzahl
     createLineChart('chartOccupancy', labels, [{
-        label: 'Personen',
+        label: 'Geschaetzte Personen',
         data: rows.map(r => r.estimated_occupancy ?? 0),
-        borderColor: '#c41e3a',
-        backgroundColor: 'rgba(196, 30, 58, 0.1)',
+        borderColor: '#d4a853',
+        backgroundColor: 'rgba(212, 168, 83, 0.1)',
         fill: true
     }], 'Personen');
-
-    createLineChart('chartTempHumidity', labels, [
-        {
-            label: 'Temperatur (°C)',
-            data: rows.map(r => r.temperature),
-            borderColor: '#ef4444',
-            backgroundColor: 'rgba(239, 68, 68, 0.1)',
-            fill: false
-        },
-        {
-            label: 'Feuchtigkeit (%)',
-            data: rows.map(r => r.humidity),
-            borderColor: '#3b82f6',
-            backgroundColor: 'rgba(59, 130, 246, 0.1)',
-            fill: false
-        }
-    ], '');
 }
 
-// ── Load Sensor Tab ──
+// ── Load Regression Tab ──
+async function loadRegression() {
+    const [regStatus, scatter] = await Promise.all([
+        fetchApi('/api/regression/status'),
+        fetchApi('/api/regression/scatter?hours=48')
+    ]);
+
+    // Regression Status
+    if (regStatus && regStatus.success) {
+        const s = regStatus.data;
+        if (s.trained) {
+            document.getElementById('regSlope').textContent = s.slope.toFixed(4);
+            document.getElementById('regIntercept').textContent = s.intercept.toFixed(2) + ' °C';
+            document.getElementById('regR2').textContent = s.r_squared.toFixed(4);
+            document.getElementById('regR2Detail').textContent =
+                (s.r_squared * 100).toFixed(1) + '% der Variation erklaert';
+            document.getElementById('regSamples').textContent = s.n_samples;
+            document.getElementById('regTrainedAt').textContent =
+                s.trained_at ? 'Trainiert: ' + new Date(s.trained_at).toLocaleString('de-DE') : '';
+            document.getElementById('regFormula').textContent =
+                `y = ${s.slope.toFixed(4)} · x + ${s.intercept.toFixed(2)}`;
+        } else {
+            document.getElementById('regSlope').textContent = '--';
+            document.getElementById('regIntercept').textContent = '--';
+            document.getElementById('regR2').textContent = '--';
+            document.getElementById('regR2Detail').textContent = 'Noch nicht trainiert';
+            document.getElementById('regSamples').textContent = '0';
+        }
+    }
+
+    // Scatter Plot
+    if (scatter && scatter.success) {
+        const points = scatter.data.points;
+        const regLine = scatter.data.regression_line;
+
+        const datasets = [{
+            label: 'Messpunkte',
+            data: points,
+            type: 'scatter',
+            backgroundColor: 'rgba(212, 168, 83, 0.6)',
+            borderColor: '#d4a853',
+            pointRadius: 4,
+            pointHoverRadius: 6
+        }];
+
+        // Regressionslinie hinzufuegen
+        if (regLine) {
+            datasets.push({
+                label: `Regression (R² = ${regLine.r_squared.toFixed(4)})`,
+                data: regLine.points,
+                type: 'scatter',
+                showLine: true,
+                borderColor: '#c41e3a',
+                borderWidth: 2,
+                pointRadius: 0,
+                fill: false
+            });
+        }
+
+        if (state.charts['chartScatter']) {
+            state.charts['chartScatter'].data.datasets = datasets;
+            state.charts['chartScatter'].update();
+        } else {
+            const ctx = document.getElementById('chartScatter').getContext('2d');
+            state.charts['chartScatter'] = new Chart(ctx, {
+                type: 'scatter',
+                data: { datasets },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { position: 'top' },
+                        tooltip: {
+                            backgroundColor: '#1a1d27',
+                            borderColor: '#2a2d3a',
+                            borderWidth: 1,
+                            callbacks: {
+                                label: (ctx) =>
+                                    `${ctx.dataset.label}: ${ctx.parsed.x} Personen → ${ctx.parsed.y.toFixed(1)} °C`
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            title: { display: true, text: 'Geschaetzte Personenanzahl' },
+                            min: 0, max: 130
+                        },
+                        y: {
+                            title: { display: true, text: 'Temperatur (°C)' }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Vorhersagen
+        const scenarios = scatter.data.scenarios;
+        const grid = document.getElementById('predictionsGrid');
+        if (scenarios) {
+            grid.innerHTML = scenarios.map(s => `
+                <div class="prediction-card">
+                    <div class="persons">${s.persons}</div>
+                    <div class="label">${s.label}</div>
+                    <div class="temp">${s.predicted_temp.toFixed(1)} <span class="temp-unit">°C</span></div>
+                </div>
+            `).join('');
+        } else {
+            grid.innerHTML = '<p>Modell noch nicht trainiert. Druecke "Modell neu trainieren".</p>';
+        }
+    }
+}
+
+// ── Load Sensors Tab ──
 async function loadSensors() {
     const [occ, stats] = await Promise.all([
         fetchApi('/api/occupancy/current'),
@@ -255,19 +299,20 @@ async function loadSensors() {
             s.temperature != null ? s.temperature.toFixed(1) + ' °C' : '--';
         document.getElementById('sensorHumidity').textContent =
             s.humidity != null ? s.humidity.toFixed(1) + ' %' : '--';
-        document.getElementById('sensorPressure').textContent =
-            s.pressure != null ? s.pressure.toFixed(1) + ' hPa' : '--';
-        document.getElementById('sensorMovement').textContent = s.movement_count_5min ?? 0;
+        document.getElementById('sensorGas').textContent =
+            s.gas_resistance != null ? Math.round(s.gas_resistance).toLocaleString() + ' Ω' : '--';
+        document.getElementById('sensorMovement').textContent =
+            s.movement_detected ? 'Ja' : 'Nein';
         document.getElementById('sensorMovementStatus').textContent =
-            s.movement_detected ? 'Aktiv' : 'Keine Bewegung';
+            s.movement_detected ? 'Bewegung erkannt' : 'Keine Bewegung';
     }
 
     if (stats && stats.success) {
         const d = stats.data;
+        document.getElementById('sensorTempRange').textContent =
+            d.min_temp != null ? `Min ${d.min_temp.toFixed(1)} / Max ${d.max_temp.toFixed(1)} °C` : '--';
         document.getElementById('sensorHumidityAvg').textContent =
             d.avg_humidity != null ? 'Durchschnitt: ' + d.avg_humidity.toFixed(1) + ' %' : '--';
-        document.getElementById('sensorPressureAvg').textContent =
-            d.avg_pressure != null ? 'Durchschnitt: ' + d.avg_pressure.toFixed(1) + ' hPa' : '--';
     }
 
     // Gas and Pressure charts
@@ -277,7 +322,7 @@ async function loadSensors() {
         const labels = rows.map(r => formatTime(r.timestamp));
 
         createLineChart('chartGas', labels, [{
-            label: 'Gasresistenz (Ohm)',
+            label: 'VOC / Gasresistenz (Ohm)',
             data: rows.map(r => r.gas_resistance),
             borderColor: '#d4a853',
             backgroundColor: 'rgba(212, 168, 83, 0.1)',
@@ -301,7 +346,7 @@ async function loadTable() {
 
     const tbody = document.getElementById('tableBody');
     if (!data.data.length) {
-        tbody.innerHTML = '<tr><td colspan="9">Keine Daten vorhanden</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7">Keine Daten vorhanden</td></tr>';
         return;
     }
 
@@ -310,12 +355,10 @@ async function loadTable() {
             <td>${r.id}</td>
             <td>${r.timestamp || '--'}</td>
             <td>${r.temperature != null ? r.temperature.toFixed(1) : '--'}</td>
-            <td>${r.pressure != null ? r.pressure.toFixed(1) : '--'}</td>
             <td>${r.humidity != null ? r.humidity.toFixed(1) : '--'}</td>
             <td>${r.gas_resistance != null ? Math.round(r.gas_resistance).toLocaleString() : '--'}</td>
             <td><span class="badge ${r.movement_detected ? 'badge-yes' : 'badge-no'}">${r.movement_detected ? 'Ja' : 'Nein'}</span></td>
             <td>${r.estimated_occupancy ?? '--'}</td>
-            <td>${r.ac_recommendation ?? '--'}</td>
         </tr>
     `).join('');
 
@@ -333,20 +376,16 @@ async function init() {
         loadDashboardCharts(),
         loadTable()
     ]);
-
-    // Preload other tabs in background
-    loadOccupancy();
-    loadOccupancyHistory();
+    loadRegression();
     loadSensors();
 }
 
 init();
 
-// ── Auto-refresh ──
+// ── Auto-refresh every 30s ──
 setInterval(() => {
     loadDashboard();
     loadDashboardCharts();
-    loadOccupancy();
-    loadOccupancyHistory();
+    loadRegression();
     loadSensors();
 }, REFRESH_INTERVAL);
