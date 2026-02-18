@@ -29,6 +29,7 @@ async def estimation_loop():
                         FROM sensor_data
                         WHERE estimated_occupancy IS NULL
                         ORDER BY id ASC
+                        LIMIT 500
                     """)
                     rows = cursor.fetchall()
                     for row in rows:
@@ -51,17 +52,17 @@ async def estimation_loop():
 
 
 async def regression_train_loop():
-    """Trainiert Regressionsmodell alle 48 Stunden mit gesammelten Daten."""
+    """Trainiert Regressionsmodell alle 6 Stunden mit allen verfuegbaren Daten."""
     # Erstes Training direkt beim Start
     await asyncio.sleep(10)
-    train_regression_from_db(hours=48)
+    train_regression_from_db(hours=0)
     print("[Regression] Initiales Training abgeschlossen")
 
     while True:
-        await asyncio.sleep(48 * 3600)  # 48 Stunden
+        await asyncio.sleep(6 * 3600)  # Alle 6 Stunden neu trainieren
         try:
-            train_regression_from_db(hours=48)
-            print("[Regression] Modell neu trainiert (48h-Zyklus)")
+            train_regression_from_db(hours=0)
+            print("[Regression] Modell neu trainiert (6h-Zyklus)")
         except Exception as e:
             print(f"[Regression] Trainingsfehler: {e}")
 

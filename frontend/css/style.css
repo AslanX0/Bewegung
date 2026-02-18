@@ -238,6 +238,22 @@ footer {
     margin: 0 auto;
 }
 
+/* Error Banner */
+.error-banner {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 12px 24px;
+    background: rgba(239, 68, 68, 0.15);
+    border-bottom: 1px solid var(--danger);
+    color: var(--danger);
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.error-banner .mdi { font-size: 20px; }
+
 /* Responsive */
 @media (max-width: 768px) {
     .header-subtitle { display: none; }

@@ -4,6 +4,7 @@ import os
 from datetime import datetime
 
 CALIBRATION_FILE = os.path.join(os.path.dirname(__file__), "calibration.json")
+REGRESSION_FILE = os.path.join(os.path.dirname(__file__), "regression_model.json")
 
 MAX_PERSONS = 120
 MIN_PERSONS = 0
@@ -97,6 +98,8 @@ class TemperatureRegression:
         self.r_squared = None
         self.n_samples = 0
         self.trained_at = None
+        self.last_error = None
+        self._load_model()
 
     def train(self, persons_list, temperature_list):
         """Trainiert das Modell mit gesammelten Messdaten."""
@@ -125,7 +128,37 @@ class TemperatureRegression:
 
         self.n_samples = n
         self.trained_at = datetime.now().isoformat()
+        self._save_model()
         return True
+
+    def _save_model(self):
+        try:
+            with open(REGRESSION_FILE, "w") as f:
+                json.dump({
+                    "slope": self.slope,
+                    "intercept": self.intercept,
+                    "r_squared": self.r_squared,
+                    "n_samples": self.n_samples,
+                    "trained_at": self.trained_at
+                }, f, indent=2)
+        except Exception as e:
+            print(f"[Regression] Fehler beim Speichern: {e}")
+
+    def _load_model(self):
+        if not os.path.exists(REGRESSION_FILE):
+            return
+        try:
+            with open(REGRESSION_FILE, "r") as f:
+                data = json.load(f)
+            self.slope = data.get("slope")
+            self.intercept = data.get("intercept")
+            self.r_squared = data.get("r_squared")
+            self.n_samples = data.get("n_samples", 0)
+            self.trained_at = data.get("trained_at")
+            if self.slope is not None:
+                print(f"[Regression] Modell geladen (R²={self.r_squared}, n={self.n_samples})")
+        except Exception as e:
+            print(f"[Regression] Fehler beim Laden: {e}")
 
     def predict(self, persons):
         """Gibt vorhergesagte Temperatur für Personenanzahl zurück."""

@@ -18,19 +18,52 @@ document.getElementById('btnPrev').addEventListener('click', () => { if (state.p
 document.getElementById('btnNext').addEventListener('click', () => { state.page++; loadTable(); });
 
 document.getElementById('btnRetrain').addEventListener('click', async () => {
-    const status = document.getElementById('retrainStatus');
-    status.textContent = 'Training laeuft...';
+    const statusEl = document.getElementById('retrainStatus');
+    statusEl.textContent = 'Training laeuft...';
+    statusEl.style.color = 'var(--text-muted)';
     try {
         const res = await fetch('/api/regression/train', { method: 'POST' });
         const data = await res.json();
-        status.textContent = data.success ? 'Training erfolgreich!' : 'Fehler: ' + (data.error || 'Unbekannt');
-        if (data.success) loadRegression();
-    } catch (e) { status.textContent = 'Verbindungsfehler'; }
+        if (data.success) {
+            const s = data.data;
+            statusEl.style.color = 'var(--success)';
+            statusEl.textContent = `Erfolgreich! R²=${s.r_squared.toFixed(4)}, ${s.n_samples} Datenpunkte`;
+            loadRegression();
+        } else {
+            statusEl.style.color = 'var(--danger)';
+            statusEl.textContent = data.error || 'Training fehlgeschlagen';
+        }
+    } catch (e) {
+        statusEl.style.color = 'var(--danger)';
+        statusEl.textContent = 'Verbindungsfehler';
+    }
 });
 
+function showError(msg) {
+    const banner = document.getElementById('errorBanner');
+    document.getElementById('errorMessage').textContent = msg;
+    banner.style.display = 'flex';
+}
+
+function hideError() {
+    document.getElementById('errorBanner').style.display = 'none';
+}
+
 async function fetchApi(endpoint) {
-    try { return await (await fetch(endpoint)).json(); }
-    catch (e) { console.error('API Fehler:', endpoint, e); return null; }
+    try {
+        const res = await fetch(endpoint);
+        if (!res.ok) {
+            showError('Server-Fehler: ' + res.status + ' bei ' + endpoint);
+            return null;
+        }
+        const data = await res.json();
+        hideError();
+        return data;
+    } catch (e) {
+        console.error('API Fehler:', endpoint, e);
+        showError('Verbindung zum Server fehlgeschlagen');
+        return null;
+    }
 }
 
 function createLineChart(canvasId, labels, datasets, yTitle) {
@@ -58,17 +91,6 @@ function formatTime(ts) {
     return d.toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
-function getOccupancyRange(temperature) {
-    if (temperature == null) return '--';
-    switch (true) {
-        case temperature < 18.7:  return '1-20';
-        case temperature < 20.1:  return '21-40';
-        case temperature < 21.5:  return '41-60';
-        case temperature < 22.9:  return '61-80';
-        case temperature < 24.3:  return '81-100';
-        default:                  return '101-120';
-    }
-}
 
 async function loadDashboard() {
     const res = await fetchApi('/api/data/latest');
@@ -77,8 +99,9 @@ async function loadDashboard() {
         document.getElementById('currentTemp').textContent = d.temperature != null ? d.temperature.toFixed(1) + ' °C' : '--';
         document.getElementById('currentHumidity').textContent = d.humidity != null ? d.humidity.toFixed(1) + ' %' : '--';
         document.getElementById('currentVOC').textContent = d.gas_resistance != null ? Math.round(d.gas_resistance).toLocaleString() + ' Ω' : '--';
-        document.getElementById('currentOccupancy').textContent = getOccupancyRange(d.temperature);
-        const percent = d.estimated_occupancy != null ? (d.estimated_occupancy / 120 * 100).toFixed(1) : '0.0';
+        const persons = d.estimated_occupancy;
+        document.getElementById('currentOccupancy').textContent = persons != null ? persons + ' Personen' : '--';
+        const percent = persons != null ? (persons / 120 * 100).toFixed(1) : '0.0';
         document.getElementById('currentOccPercent').textContent = percent + ' % Auslastung';
     }
     document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString('de-DE');
@@ -94,7 +117,12 @@ async function loadDashboardCharts() {
 }
 
 async function loadRegression() {
-    const [regStatus, scatter] = await Promise.all([fetchApi('/api/regression/status'), fetchApi('/api/regression/scatter?hours=48')]);
+    const [regStatus, scatter] = await Promise.all([
+        fetchApi('/api/regression/status'),
+        fetchApi('/api/regression/scatter')
+    ]);
+
+    // Status-Karten aktualisieren
     if (regStatus?.success) {
         const s = regStatus.data;
         if (s.trained) {
@@ -103,23 +131,94 @@ async function loadRegression() {
             document.getElementById('regR2').textContent = s.r_squared.toFixed(4);
             document.getElementById('regR2Detail').textContent = (s.r_squared * 100).toFixed(1) + '% der Variation erklaert';
             document.getElementById('regSamples').textContent = s.n_samples;
-            document.getElementById('regTrainedAt').textContent = s.trained_at ? 'Trainiert: ' + new Date(s.trained_at).toLocaleString('de-DE') : '';
-            document.getElementById('regFormula').textContent = `y = ${s.slope.toFixed(4)} · x + ${s.intercept.toFixed(2)}`;
+            document.getElementById('regTrainedAt').textContent = s.trained_at
+                ? 'Trainiert: ' + new Date(s.trained_at).toLocaleString('de-DE') : '';
+            document.getElementById('regFormula').textContent =
+                `y = ${s.slope.toFixed(4)} · x + ${s.intercept.toFixed(2)}`;
         } else {
-            ['regSlope','regIntercept','regR2'].forEach(id => document.getElementById(id).textContent = '--');
-            document.getElementById('regR2Detail').textContent = 'Noch nicht trainiert';
+            ['regSlope', 'regIntercept', 'regR2'].forEach(id =>
+                document.getElementById(id).textContent = '--');
+            document.getElementById('regR2Detail').textContent =
+                s.last_error || 'Noch nicht trainiert';
             document.getElementById('regSamples').textContent = '0';
+            document.getElementById('regFormula').textContent = 'y = a · x + b';
         }
     }
+
+    // Scatterplot mit Regressionslinie
     if (scatter?.success) {
-        const datasets = [{ label: 'Messpunkte', data: scatter.data.points, type: 'scatter', backgroundColor: 'rgba(212,168,83,0.6)', borderColor: '#d4a853', pointRadius: 4, pointHoverRadius: 6 }];
-        if (scatter.data.regression_line) datasets.push({ label: `Regression (R² = ${scatter.data.regression_line.r_squared.toFixed(4)})`, data: scatter.data.regression_line.points, type: 'scatter', showLine: true, borderColor: '#c41e3a', borderWidth: 2, pointRadius: 0, fill: false });
-        if (state.charts['chartScatter']) { state.charts['chartScatter'].data.datasets = datasets; state.charts['chartScatter'].update(); }
-        else {
-            state.charts['chartScatter'] = new Chart(document.getElementById('chartScatter').getContext('2d'), {
-                type: 'scatter', data: { datasets },
-                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'top' }, tooltip: { backgroundColor: '#1a1d27', callbacks: { label: ctx => `${ctx.dataset.label}: ${ctx.parsed.x} Personen → ${ctx.parsed.y.toFixed(1)} °C` } } }, scales: { x: { title: { display: true, text: 'Geschaetzte Personenanzahl' }, min: 0, max: 130 }, y: { title: { display: true, text: 'Temperatur (°C)' } } } }
+        const scatterData = scatter.data;
+
+        // Datenpunkte
+        const datasets = [{
+            label: 'Messpunkte (' + scatterData.count + ')',
+            data: scatterData.points,
+            backgroundColor: 'rgba(212, 168, 83, 0.6)',
+            borderColor: '#d4a853',
+            pointRadius: 5,
+            pointHoverRadius: 7,
+            order: 2
+        }];
+
+        // Regressionslinie als eigener Line-Datensatz
+        if (scatterData.regression_line) {
+            const rl = scatterData.regression_line;
+            datasets.push({
+                label: `Regressionsgerade (R² = ${rl.r_squared.toFixed(4)})`,
+                data: rl.points,
+                type: 'line',
+                borderColor: '#c41e3a',
+                borderWidth: 3,
+                borderDash: [],
+                pointRadius: 0,
+                pointHoverRadius: 0,
+                fill: false,
+                tension: 0,
+                order: 1
             });
+        }
+
+        // Chart erstellen oder aktualisieren
+        if (state.charts['chartScatter']) {
+            state.charts['chartScatter'].data.datasets = datasets;
+            state.charts['chartScatter'].update();
+        } else {
+            state.charts['chartScatter'] = new Chart(
+                document.getElementById('chartScatter').getContext('2d'), {
+                    type: 'scatter',
+                    data: { datasets },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { position: 'top' },
+                            tooltip: {
+                                backgroundColor: '#1a1d27',
+                                borderColor: '#2a2d3a',
+                                borderWidth: 1,
+                                callbacks: {
+                                    label: ctx => {
+                                        if (ctx.dataset.type === 'line') return '';
+                                        return `${ctx.parsed.x} Personen, ${ctx.parsed.y.toFixed(1)} °C`;
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            x: {
+                                title: { display: true, text: 'Geschaetzte Personenanzahl' },
+                                min: 0,
+                                max: 130,
+                                grid: { color: 'rgba(42, 45, 58, 0.5)' }
+                            },
+                            y: {
+                                title: { display: true, text: 'Temperatur (°C)' },
+                                grid: { color: 'rgba(42, 45, 58, 0.5)' }
+                            }
+                        }
+                    }
+                }
+            );
         }
     }
 }
@@ -148,7 +247,10 @@ async function loadSensors() {
 
 async function loadTable() {
     const data = await fetchApi(`/api/data/table?page=${state.page}&per_page=${state.perPage}`);
-    if (!data?.success) return;
+    if (!data?.success) {
+        document.getElementById('tableBody').innerHTML = '<tr><td colspan="7" style="color:var(--danger)">Fehler beim Laden der Daten</td></tr>';
+        return;
+    }
     const tbody = document.getElementById('tableBody');
     if (!data.data.length) { tbody.innerHTML = '<tr><td colspan="7">Keine Daten</td></tr>'; return; }
     tbody.innerHTML = data.data.map(r => `<tr><td>${r.id}</td><td>${r.timestamp||'--'}</td><td>${r.temperature?.toFixed(1)??'--'}</td><td>${r.humidity?.toFixed(1)??'--'}</td><td>${r.gas_resistance?Math.round(r.gas_resistance).toLocaleString():'--'}</td><td><span class="badge ${r.movement_detected?'badge-yes':'badge-no'}">${r.movement_detected?'Ja':'Nein'}</span></td><td>${r.estimated_occupancy??'--'}</td></tr>`).join('');
