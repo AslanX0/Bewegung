@@ -2,11 +2,17 @@
 
 import sys, time
 from datetime import datetime
-import RPi.GPIO as GPIO
 import pymysql
-from rpi_sensors.sensors import alle_sensoren_auslesen
-from rpi_sensors.motion_sensor import bewegung_ueberwachen
-from rpi_sensors.bme680_sensor import messen_intervall
+
+try:
+    import RPi.GPIO as GPIO
+    from rpi_sensors.sensors import alle_sensoren_auslesen
+    from rpi_sensors.motion_sensor import bewegung_ueberwachen
+    from rpi_sensors.bme680_sensor import messen_intervall
+    SENSORS_AVAILABLE = True
+except (ImportError, RuntimeError):
+    SENSORS_AVAILABLE = False
+    print("[WARNUNG] Raspberry Pi Sensoren nicht verfuegbar (kein RPi-System erkannt)")
 
 DB_CONFIG = {'host':'localhost','port':3306,'user':'root','password':'root','database':'sensor_db','cursorclass':pymysql.cursors.Cursor}
 MESSINTERVALL = 300
@@ -63,6 +69,11 @@ def hauptschleife(cursor, conn):
 
 
 if __name__ == "__main__":
+    if not SENSORS_AVAILABLE:
+        print("Dieses Skript benoetigt einen Raspberry Pi mit angeschlossenen Sensoren.")
+        print("Zum Starten des Dashboards bitte 'app.py' ausfuehren.")
+        sys.exit(1)
+
     conn = db_verbinden()
     cursor = conn.cursor()
     tabelle_erstellen(cursor)

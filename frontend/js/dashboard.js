@@ -54,7 +54,8 @@ function createLineChart(canvasId, labels, datasets, yTitle) {
 
 function formatTime(ts) {
     if (!ts) return '--';
-    return new Date(ts.replace(' ', 'T')).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+    const d = new Date(ts.replace(' ', 'T'));
+    return d.toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
 function getOccupancyRange(temperature) {
@@ -84,7 +85,7 @@ async function loadDashboard() {
 }
 
 async function loadDashboardCharts() {
-    const data = await fetchApi('/api/data/history?hours=24&limit=500');
+    const data = await fetchApi('/api/data/history?hours=168&limit=2000');
     if (!data?.success || !data.data.length) return;
     const rows = data.data, labels = rows.map(r => formatTime(r.timestamp));
     createLineChart('chartTemperature', labels, [{ label: 'Temperatur (°C)', data: rows.map(r => r.temperature), borderColor: '#ef4444', backgroundColor: 'rgba(239,68,68,0.1)', fill: true }], '°C');
@@ -137,7 +138,7 @@ async function loadSensors() {
         document.getElementById('sensorTempRange').textContent = stats.data.min_temp != null ? `Min ${stats.data.min_temp.toFixed(1)} / Max ${stats.data.max_temp.toFixed(1)} °C` : '--';
         document.getElementById('sensorHumidityAvg').textContent = stats.data.avg_humidity != null ? 'Durchschnitt: ' + stats.data.avg_humidity.toFixed(1) + ' %' : '--';
     }
-    const hist = await fetchApi('/api/data/history?hours=24&limit=500');
+    const hist = await fetchApi('/api/data/history?hours=168&limit=2000');
     if (hist?.success && hist.data.length) {
         const rows = hist.data, labels = rows.map(r => formatTime(r.timestamp));
         createLineChart('chartGas', labels, [{ label: 'VOC (Ohm)', data: rows.map(r => r.gas_resistance), borderColor: '#d4a853', backgroundColor: 'rgba(212,168,83,0.1)', fill: true }], 'Ohm');
