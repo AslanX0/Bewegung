@@ -25,7 +25,7 @@ async def estimation_loop():
                 try:
                     cursor = conn.cursor()
                     cursor.execute("""
-                        SELECT id, temperature
+                        SELECT id, gas_resistance, movement_detected
                         FROM sensor_data
                         WHERE estimated_occupancy IS NULL
                         ORDER BY id ASC
@@ -34,7 +34,8 @@ async def estimation_loop():
                     rows = cursor.fetchall()
                     for row in rows:
                         result = estimator.estimate(
-                            temperature=row.get('temperature')
+                            row.get('gas_resistance'),
+                            bool(row.get('movement_detected', False))
                         )
                         persons = result['estimated_persons']
                         cursor.execute(
@@ -73,17 +74,17 @@ async def data_retention_loop():
 
 
 async def regression_train_loop():
-    """Trainiert Regressionsmodell alle 6 Stunden mit allen verfuegbaren Daten."""
+    """Trainiert Regressionsmodell alle 48 Stunden mit allen verfuegbaren Daten."""
     # Erstes Training direkt beim Start
     await asyncio.sleep(10)
     train_regression_from_db(hours=0)
     print("[Regression] Initiales Training abgeschlossen")
 
     while True:
-        await asyncio.sleep(6 * 3600)  # Alle 6 Stunden neu trainieren
+        await asyncio.sleep(48 * 3600)  # Alle 48 Stunden neu trainieren
         try:
             train_regression_from_db(hours=0)
-            print("[Regression] Modell neu trainiert (6h-Zyklus)")
+            print("[Regression] Modell neu trainiert (48h-Zyklus)")
         except Exception as e:
             print(f"[Regression] Trainingsfehler: {e}")
 
@@ -121,7 +122,7 @@ async def lifespan(app):
     task_ret = asyncio.create_task(data_retention_loop())
     print("[Server] Hintergrund-Tasks gestartet")
     print("  - AutoEstimator: Personenschaetzung alle 60s")
-    print("  - Regression: Modelltraining alle 6h")
+    print("  - Regression: Modelltraining alle 48h")
     print("  - Retention: Datenbeschraenkung auf 30 Tage (taeglich)")
     yield
     task_est.cancel()

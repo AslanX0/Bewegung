@@ -12,7 +12,10 @@ def _get_persons(row, cursor=None, conn=None):
     if row.get('estimated_occupancy') is not None:
         return row['estimated_occupancy']
 
-    persons = estimator.estimate(row.get('temperature'))['estimated_persons']
+    persons = estimator.estimate(
+        row.get('gas_resistance'),
+        bool(row.get('movement_detected', False))
+    )['estimated_persons']
 
     if cursor and conn and row.get('id'):
         cursor.execute("UPDATE sensor_data SET estimated_occupancy=%s WHERE id=%s", (persons, row['id']))
@@ -36,12 +39,10 @@ def current():
             return {"success": True, "data": {"estimated_persons": 0, "occupancy_percent": 0, "sensors": None}}
         
         persons = _get_persons(row, cursor, conn)
-        ac_mode = estimator.get_ac_mode(persons)
 
         return {"success": True, "data": {
             "estimated_persons": persons,
             "occupancy_percent": round(persons / 120 * 100, 1),
-            "ac_mode": ac_mode,
             "sensors": {
                 "temperature": row.get('temperature'),
                 "humidity": row.get('humidity'),

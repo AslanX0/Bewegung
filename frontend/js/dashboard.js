@@ -91,14 +91,6 @@ function formatTime(ts) {
     return d.toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
-
-const AC_MODE_LABELS = ['Aus', 'Stufe 1 (minimal)', 'Stufe 2', 'Stufe 3', 'Stufe 4', 'Stufe 5 (max)'];
-
-function getAcMode(persons) {
-    if (persons <= 0) return 0;
-    return Math.min(5, Math.max(1, Math.ceil(persons / 24)));
-}
-
 async function loadDashboard() {
     const res = await fetchApi('/api/data/latest');
     if (res?.success && res.data) {
@@ -110,10 +102,6 @@ async function loadDashboard() {
         document.getElementById('currentOccupancy').textContent = persons != null ? persons + ' Personen' : '--';
         const percent = persons != null ? (persons / 120 * 100).toFixed(1) : '0.0';
         document.getElementById('currentOccPercent').textContent = percent + ' % Auslastung';
-
-        const mode = getAcMode(persons);
-        document.getElementById('acMode').textContent = 'Stufe ' + mode;
-        document.getElementById('acModeDetail').textContent = AC_MODE_LABELS[mode];
     }
     document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString('de-DE');
 }
@@ -127,93 +115,6 @@ async function loadDashboardCharts() {
     createLineChart('chartOccupancy', labels, [{ label: 'Geschaetzte Personen', data: rows.map(r => r.estimated_occupancy ?? 0), borderColor: '#d4a853', backgroundColor: 'rgba(212,168,83,0.1)', fill: true }], 'Personen');
 }
 
-function buildRegressionChart(chartId, seriesData, label, unit, color) {
-    if (!seriesData) return;
-    const xFmt = value => {
-        const d = new Date(value);
-        return d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' })
-             + ' ' + d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
-    };
-    const datasets = [];
-    if (seriesData.points && seriesData.points.length > 0) {
-        datasets.push({
-            label: label + ' (' + seriesData.points.length + ' Messpunkte)',
-            data: seriesData.points,
-            backgroundColor: color + '44',
-            borderColor: color,
-            pointRadius: 2,
-            pointHoverRadius: 5,
-            order: 3
-        });
-    }
-    if (seriesData.trend && seriesData.trend.length >= 2) {
-        datasets.push({
-            label: 'Trendlinie',
-            data: seriesData.trend,
-            type: 'line',
-            borderColor: color,
-            borderWidth: 2,
-            borderDash: [6, 3],
-            pointRadius: 0,
-            fill: false,
-            tension: 0,
-            order: 2
-        });
-    }
-    if (seriesData.predictions && seriesData.predictions.length > 0) {
-        datasets.push({
-            label: 'Prognose (naechste 5 Messungen)',
-            data: seriesData.predictions,
-            backgroundColor: '#ff6b35',
-            borderColor: '#ff6b35',
-            pointRadius: 9,
-            pointHoverRadius: 11,
-            order: 1
-        });
-    }
-    if (state.charts[chartId]) {
-        state.charts[chartId].data.datasets = datasets;
-        state.charts[chartId].update();
-    } else {
-        state.charts[chartId] = new Chart(
-            document.getElementById(chartId).getContext('2d'), {
-                type: 'scatter',
-                data: { datasets },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: { position: 'top' },
-                        tooltip: {
-                            backgroundColor: '#1a1d27',
-                            borderColor: '#2a2d3a',
-                            borderWidth: 1,
-                            callbacks: {
-                                label: ctx => {
-                                    if (ctx.dataset.label === 'Trendlinie') return '';
-                                    const prefix = ctx.dataset.label.startsWith('Prognose') ? 'Prognose: ' : '';
-                                    return `${prefix}${xFmt(ctx.parsed.x)}  –  ${ctx.parsed.y.toFixed(1)} ${unit}`;
-                                }
-                            }
-                        }
-                    },
-                    scales: {
-                        x: {
-                            title: { display: true, text: 'Datum / Uhrzeit' },
-                            ticks: { callback: xFmt, maxTicksLimit: 8 },
-                            grid: { color: 'rgba(42, 45, 58, 0.5)' }
-                        },
-                        y: {
-                            title: { display: true, text: label + ' (' + unit + ')' },
-                            grid: { color: 'rgba(42, 45, 58, 0.5)' }
-                        }
-                    }
-                }
-            }
-        );
-    }
-}
-
 async function loadRegression() {
     const [regStatus, scatter] = await Promise.all([
         fetchApi('/api/regression/status'),
@@ -223,7 +124,7 @@ async function loadRegression() {
     if (regStatus?.success) {
         const s = regStatus.data;
         if (s.trained) {
-            document.getElementById('regSlope').textContent = s.slope.toFixed(6) + ' °C/h';
+            document.getElementById('regSlope').textContent = s.slope.toFixed(4) + ' °C/Person';
             document.getElementById('regIntercept').textContent = s.intercept.toFixed(2) + ' °C';
             document.getElementById('regR2').textContent = s.r_squared.toFixed(4);
             document.getElementById('regR2Detail').textContent = (s.r_squared * 100).toFixed(1) + '% der Variation erklaert';
@@ -231,22 +132,94 @@ async function loadRegression() {
             document.getElementById('regTrainedAt').textContent = s.trained_at
                 ? 'Trainiert: ' + new Date(s.trained_at).toLocaleString('de-DE') : '';
             document.getElementById('regFormula').textContent =
-                `T = ${s.slope.toFixed(6)} · h + ${s.intercept.toFixed(2)} °C`;
+                `T = ${s.slope.toFixed(4)} · x + ${s.intercept.toFixed(2)} °C`;
+
+            // Scenarios table
+            if (s.scenarios) {
+                document.getElementById('scenariosBody').innerHTML = s.scenarios.map(sc =>
+                    `<tr><td style="padding:0.4rem 0.75rem;">${sc.label}</td><td style="padding:0.4rem 0.75rem;">${sc.persons}</td><td style="padding:0.4rem 0.75rem;">${sc.predicted_temp != null ? sc.predicted_temp.toFixed(2) + ' °C' : '--'}</td></tr>`
+                ).join('');
+            }
         } else {
             ['regSlope', 'regIntercept', 'regR2'].forEach(id =>
                 document.getElementById(id).textContent = '--');
             document.getElementById('regR2Detail').textContent =
                 s.last_error || 'Noch nicht trainiert';
             document.getElementById('regSamples').textContent = '0';
-            document.getElementById('regFormula').textContent = 'T = a · h + b';
+            document.getElementById('regFormula').textContent = 'T = a · x + b';
+            document.getElementById('scenariosBody').innerHTML =
+                '<tr><td colspan="3" style="padding:0.4rem 0.75rem;color:var(--text-muted);">Noch nicht trainiert</td></tr>';
         }
     }
 
     if (scatter?.success) {
         const d = scatter.data;
-        buildRegressionChart('chartScatter',            d.temperature, 'Temperatur',       '°C', '#ef4444');
-        buildRegressionChart('chartRegressionHumidity', d.humidity,    'Luftfeuchtigkeit',  '%',  '#3b82f6');
-        buildRegressionChart('chartRegressionGas',      d.gas,         'Luftqualitaet VOC', 'Ω',  '#d4a853');
+        const points = d.points || [];
+        const datasets = [];
+
+        if (points.length > 0) {
+            datasets.push({
+                label: `Messpunkte (${points.length})`,
+                data: points,
+                backgroundColor: 'rgba(212,168,83,0.5)',
+                borderColor: '#d4a853',
+                pointRadius: 3,
+                pointHoverRadius: 5,
+                order: 2
+            });
+        }
+
+        if (d.regression_line) {
+            const rl = d.regression_line;
+            datasets.push({
+                label: `Regressionsgerade (R²=${rl.r_squared.toFixed(4)})`,
+                data: rl.points,
+                type: 'line',
+                borderColor: '#ef4444',
+                borderWidth: 2,
+                pointRadius: 0,
+                fill: false,
+                tension: 0,
+                order: 1
+            });
+        }
+
+        if (state.charts['chartScatter']) {
+            state.charts['chartScatter'].data.datasets = datasets;
+            state.charts['chartScatter'].update();
+        } else {
+            state.charts['chartScatter'] = new Chart(
+                document.getElementById('chartScatter').getContext('2d'), {
+                    type: 'scatter',
+                    data: { datasets },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { position: 'top' },
+                            tooltip: {
+                                backgroundColor: '#1a1d27',
+                                borderColor: '#2a2d3a',
+                                borderWidth: 1,
+                                callbacks: {
+                                    label: ctx => `${ctx.parsed.x} Personen  –  ${ctx.parsed.y.toFixed(2)} °C`
+                                }
+                            }
+                        },
+                        scales: {
+                            x: {
+                                title: { display: true, text: 'Geschaetzte Personen' },
+                                grid: { color: 'rgba(42, 45, 58, 0.5)' }
+                            },
+                            y: {
+                                title: { display: true, text: 'Temperatur (°C)' },
+                                grid: { color: 'rgba(42, 45, 58, 0.5)' }
+                            }
+                        }
+                    }
+                }
+            );
+        }
     }
 }
 
@@ -270,9 +243,10 @@ async function loadSensors() {
     }
     if (estStatus?.success) {
         const e = estStatus.data;
-        document.getElementById('calibBaseTemp').textContent = e.baseline_temp != null ? e.baseline_temp.toFixed(1) + ' °C' : '--';
-        document.getElementById('calibFullTemp').textContent = e.full_temp != null ? e.full_temp.toFixed(1) + ' °C' : '--';
-        document.getElementById('calibState').textContent = e.calibrated ? 'Kalibriert' : 'Standard (nicht kalibriert)';
+        const baseline = e.baseline || {};
+        document.getElementById('calibGasBaseline').textContent = baseline.gas_resistance != null
+            ? Math.round(baseline.gas_resistance).toLocaleString() + ' Ω' : '--';
+        document.getElementById('calibState').textContent = baseline.calibrated ? 'Kalibriert' : 'Standard (nicht kalibriert)';
     }
     const hist = await fetchApi('/api/data/history?hours=168&limit=2000');
     if (hist?.success && hist.data.length) {
@@ -283,27 +257,27 @@ async function loadSensors() {
     }
 }
 
-async function calibrateEstimator(endpoint, label) {
+document.getElementById('btnCalibBaseline').addEventListener('click', async () => {
     const statusEl = document.getElementById('calibStatus');
     const latest = await fetchApi('/api/data/latest');
-    if (!latest?.success || latest.data.temperature == null) {
-        statusEl.textContent = 'Kein aktueller Temperaturwert verfuegbar';
+    if (!latest?.success || latest.data.gas_resistance == null) {
+        statusEl.textContent = 'Kein aktueller VOC-Wert verfuegbar';
         statusEl.style.color = 'var(--danger)';
         return;
     }
-    const temp = latest.data.temperature;
+    const gas = latest.data.gas_resistance;
     statusEl.style.color = 'var(--text-muted)';
-    statusEl.textContent = `Setze ${label} auf ${temp.toFixed(1)} °C ...`;
+    statusEl.textContent = `Setze VOC-Baseline auf ${Math.round(gas).toLocaleString()} Ω ...`;
     try {
-        const res = await fetch(endpoint, {
+        const res = await fetch('/api/estimator/baseline', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ temperature: temp })
+            body: JSON.stringify({ gas_resistance: gas })
         });
         const data = await res.json();
         if (data.success) {
             statusEl.style.color = 'var(--success)';
-            statusEl.textContent = `${label} auf ${temp.toFixed(1)} °C gesetzt`;
+            statusEl.textContent = `VOC-Baseline auf ${Math.round(gas).toLocaleString()} Ω gesetzt`;
             loadSensors();
         } else {
             statusEl.style.color = 'var(--danger)';
@@ -313,12 +287,7 @@ async function calibrateEstimator(endpoint, label) {
         statusEl.style.color = 'var(--danger)';
         statusEl.textContent = 'Verbindungsfehler';
     }
-}
-
-document.getElementById('btnCalibBaseline').addEventListener('click', () =>
-    calibrateEstimator('/api/estimator/baseline', 'Basistemperatur (leer)'));
-document.getElementById('btnCalibFull').addEventListener('click', () =>
-    calibrateEstimator('/api/estimator/fulltemp', 'Vollbelegungs-Temperatur'));
+});
 
 async function loadTable() {
     const data = await fetchApi(`/api/data/table?page=${state.page}&per_page=${state.perPage}`);

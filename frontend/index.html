@@ -64,14 +64,6 @@
                     <span class="stat-detail" id="currentOccPercent">--</span>
                 </div>
             </div>
-            <div class="stat-card">
-                <div class="stat-icon"><span class="mdi mdi-air-conditioner"></span></div>
-                <div class="stat-info">
-                    <span class="stat-value" id="acMode">--</span>
-                    <span class="stat-label">Klimaanlage</span>
-                    <span class="stat-detail" id="acModeDetail">--</span>
-                </div>
-            </div>
         </div>
         <div class="card">
             <div class="card-header"><h3><span class="mdi mdi-chart-line"></span> Temperaturverlauf (24h)</h3></div>
@@ -94,7 +86,7 @@
             <div class="stat-card">
                 <div class="stat-icon"><span class="mdi mdi-chart-timeline-variant"></span></div>
                 <div class="stat-info">
-                    <span class="stat-label">Steigung (a) [°C/h]</span>
+                    <span class="stat-label">Steigung (a) [°C/Person]</span>
                     <span class="stat-value" id="regSlope">--</span>
                 </div>
             </div>
@@ -124,24 +116,23 @@
         </div>
         <div class="card">
             <div class="card-header">
-                <h3><span class="mdi mdi-chart-scatter-plot-hexbin"></span> Temperatur ueber Zeit</h3>
-                <span class="stat-detail" id="regFormula">T = a · h + b</span>
+                <h3><span class="mdi mdi-chart-scatter-plot-hexbin"></span> Scatterplot: Personen vs. Temperatur</h3>
+                <span class="stat-detail" id="regFormula">T = a · x + b</span>
             </div>
             <div class="card-body chart-container-large"><canvas id="chartScatter"></canvas></div>
         </div>
-        <div class="card">
-            <div class="card-header">
-                <h3><span class="mdi mdi-water-percent"></span> Luftfeuchtigkeit ueber Zeit</h3>
-                <span class="stat-detail">Trendlinie + Prognose naechste 5 Messungen</span>
+        <div class="card" id="scenariosCard">
+            <div class="card-header"><h3><span class="mdi mdi-table"></span> Szenarien</h3></div>
+            <div class="card-body">
+                <table style="width:100%;border-collapse:collapse;text-align:left;">
+                    <thead><tr style="color:var(--text-muted);font-size:0.85rem;">
+                        <th style="padding:0.4rem 0.75rem;">Szenario</th>
+                        <th style="padding:0.4rem 0.75rem;">Personen</th>
+                        <th style="padding:0.4rem 0.75rem;">Vorhergesagte Temperatur</th>
+                    </tr></thead>
+                    <tbody id="scenariosBody"><tr><td colspan="3" style="padding:0.4rem 0.75rem;color:var(--text-muted);">Noch nicht trainiert</td></tr></tbody>
+                </table>
             </div>
-            <div class="card-body chart-container-large"><canvas id="chartRegressionHumidity"></canvas></div>
-        </div>
-        <div class="card">
-            <div class="card-header">
-                <h3><span class="mdi mdi-molecule-co2"></span> Luftqualitaet (VOC) ueber Zeit</h3>
-                <span class="stat-detail">Trendlinie + Prognose naechste 5 Messungen</span>
-            </div>
-            <div class="card-body chart-container-large"><canvas id="chartRegressionGas"></canvas></div>
         </div>
         <div class="card">
             <div class="card-header"><h3><span class="mdi mdi-cog"></span> Modell-Verwaltung</h3></div>
@@ -187,23 +178,20 @@
             </div>
         </div>
         <div class="card">
-            <div class="card-header"><h3><span class="mdi mdi-tune"></span> Temperatursensor kalibrieren</h3></div>
+            <div class="card-header"><h3><span class="mdi mdi-tune"></span> VOC-Sensor kalibrieren</h3></div>
             <div class="card-body">
                 <p style="color:var(--text-muted);margin-bottom:0.75rem;">
-                    Die Personenschaetzung basiert auf der Raumtemperatur. Damit das Modell korrekte Werte liefert, muss es einmalig an Ihre Raeumlichkeiten angepasst werden. Dazu sind zwei Referenzpunkte noetig:
+                    Die Personenschaetzung basiert auf dem VOC-Gaswiderstand (BME680). Mehr Personen erzeugen mehr VOC, was den Gaswiderstand senkt. Einmalig muss ein Basiswert bei leerem Raum gesetzt werden.
                 </p>
                 <ul style="color:var(--text-muted);margin:0 0 1rem 1.2rem;line-height:1.8;">
-                    <li><strong style="color:var(--text);">Leerer Raum</strong> &mdash; Druecken bevor das Restaurant oeffnet oder nachdem alle Gaeste gegangen sind. Die aktuelle Temperatur wird als Nullpunkt gespeichert (= 0 Personen).</li>
-                    <li><strong style="color:var(--text);">Voller Raum</strong> &mdash; Druecken bei maximaler Auslastung (ca. 120 Gaeste). Die aktuelle Temperatur wird als Obergrenze gespeichert (= 120 Personen). Alle Zwischenwerte werden linear interpoliert.</li>
+                    <li><strong style="color:var(--text);">Leerer Raum</strong> &mdash; Druecken bevor das Restaurant oeffnet oder nachdem alle Gaeste gegangen sind. Der aktuelle VOC-Wert wird als Baseline (= 0 Personen) gespeichert.</li>
                 </ul>
                 <div style="display:flex;gap:1rem;flex-wrap:wrap;align-items:center;margin-bottom:0.75rem;">
-                    <button class="btn-primary" id="btnCalibBaseline"><span class="mdi mdi-thermometer-low"></span> Leerer Raum speichern</button>
-                    <button class="btn-primary" id="btnCalibFull"><span class="mdi mdi-thermometer-high"></span> Voller Raum speichern</button>
+                    <button class="btn-primary" id="btnCalibBaseline"><span class="mdi mdi-molecule-co2"></span> VOC-Baseline speichern (leerer Raum)</button>
                     <span class="stat-detail" id="calibStatus"></span>
                 </div>
                 <div style="color:var(--text-muted);font-size:0.85rem;">
-                    Leer-Referenz: <strong id="calibBaseTemp">--</strong> &nbsp;&nbsp;
-                    Voll-Referenz: <strong id="calibFullTemp">--</strong> &nbsp;&nbsp;
+                    VOC-Baseline: <strong id="calibGasBaseline">--</strong> &nbsp;&nbsp;
                     Status: <strong id="calibState">--</strong>
                 </div>
             </div>
@@ -249,6 +237,6 @@
     <p>Asia Restaurant &mdash; Letzte Aktualisierung: <span id="lastUpdate"></span></p>
 </footer>
 
-<script src="/static/js/dashboard.js?v=6"></script>
+<script src="/static/js/dashboard.js?v=7"></script>
 </body>
 </html>
