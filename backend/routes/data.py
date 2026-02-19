@@ -37,7 +37,7 @@ def api_stats():
                             content={"success": False, "error": "Datenbankverbindung fehlgeschlagen"})
     try:
         cursor = conn.cursor()
-        time_24h_ago = datetime.now() - timedelta(hours=24)
+        time_24h_ago = datetime.now() - timedelta(days=60)
         cursor.execute("""
             SELECT
                 COUNT(*) as total_readings,
@@ -62,7 +62,7 @@ def api_stats():
 
 
 @router.get("/api/data/history")
-def api_history(hours: int = Query(default=24), limit: int = Query(default=1000)):
+def api_history(hours: int = Query(default=1440), limit: int = Query(default=100000)):
     conn = get_db_connection()
     if conn is None:
         return JSONResponse(status_code=500,
@@ -127,7 +127,7 @@ def api_data_legacy():
         return JSONResponse(status_code=500, content={"error": "Datenbankverbindung fehlgeschlagen"})
     try:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM sensor_data ORDER BY id DESC LIMIT 50")
+        cursor.execute("SELECT * FROM sensor_data ORDER BY id DESC LIMIT 10000")
         data = cursor.fetchall()
         for row in data:
             if row.get("timestamp"):

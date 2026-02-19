@@ -57,7 +57,7 @@ def current():
 
 
 @router.get("/api/occupancy/history")
-def history(hours: int = Query(24)):
+def history(hours: int = Query(1440)):
     conn = get_db_connection()
     if not conn:
         return JSONResponse(status_code=500, content={"success": False, "error": "DB-Fehler"})
@@ -66,7 +66,7 @@ def history(hours: int = Query(24)):
         cursor = conn.cursor()
         cursor.execute("""
             SELECT id, timestamp, estimated_occupancy, temperature, gas_resistance, movement_detected
-            FROM sensor_data WHERE timestamp >= %s ORDER BY timestamp LIMIT 500
+            FROM sensor_data WHERE timestamp >= %s ORDER BY timestamp LIMIT 100000
         """, (datetime.now() - timedelta(hours=hours),))
         
         rows = cursor.fetchall()
